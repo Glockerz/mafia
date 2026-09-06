@@ -1,0 +1,637 @@
+-- Script Path: game:GetService("Players").ZombieHenry5.PlayerScripts.MWClient
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
+local TextService = game:GetService("TextService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local MW = ReplicatedStorage:WaitForChild("MW")
+local Remotes = MW:WaitForChild("Remotes")
+local Config = require(MW:WaitForChild("Config"))
+local GameData = require(MW:WaitForChild("GameData"))
+local Util = require(MW:WaitForChild("Util"))
+local State = require(script:WaitForChild("State"))
+local Sfx = require(script:WaitForChild("Sfx"))
+local Music = require(script:WaitForChild("Music"))
+local Settings = require(script:WaitForChild("Settings"))
+local FamilyChat = require(script:WaitForChild("FamilyChat"))
+local ChatTags = require(script:WaitForChild("ChatTags"))
+local Hud = require(script:WaitForChild("Hud"))
+local SafehouseTab = require(script:WaitForChild("SafehouseTab"))
+local JobsTab = require(script:WaitForChild("JobsTab"))
+local OpsTab = require(script:WaitForChild("OpsTab"))
+local FightTab = require(script:WaitForChild("FightTab"))
+local BossTab = require(script:WaitForChild("BossTab"))
+local PropsTab = require(script:WaitForChild("PropsTab"))
+local FamilyTab = require(script:WaitForChild("FamilyTab"))
+local TerritoryTab = require(script:WaitForChild("TerritoryTab"))
+local RankingsTab = require(script:WaitForChild("RankingsTab"))
+local CrewTab = require(script:WaitForChild("CrewTab"))
+local InventoryTab = require(script:WaitForChild("InventoryTab"))
+local CollectionTab = require(script:WaitForChild("CollectionTab"))
+local TradeTab = require(script:WaitForChild("TradeTab"))
+local HeistsTab = require(script:WaitForChild("HeistsTab"))
+local ContractsTab = require(script:WaitForChild("ContractsTab"))
+local BankTab = require(script:WaitForChild("BankTab"))
+local ShopTab = require(script:WaitForChild("ShopTab"))
+local AdminTab = require(script:WaitForChild("AdminTab"))
+local BlankTab = require(script:WaitForChild("BlankTab"))
+local PlayerList = require(script:WaitForChild("PlayerList"))
+local ProfilePopup = require(script:WaitForChild("ProfilePopup"))
+local FamilyProfilePopup = require(script:WaitForChild("FamilyProfilePopup"))
+local Guide = require(script:WaitForChild("Guide"))
+local EventBanner = require(script:WaitForChild("EventBanner"))
+local v1 = CFrame.new(0, 60, 0, 1, 0, 0, 0, 0, 1, 0, -1, 0)
+local v2 = v1 * CFrame.new(0, 0, -10)
+
+local function lockCamera() --[[ lockCamera | Line: 57 | Upvalues: v1 (copy), v2 (copy), UserInputService (copy) ]]
+    local CurrentCamera = workspace.CurrentCamera
+
+    if CurrentCamera then
+        CurrentCamera.CameraType = Enum.CameraType.Scriptable
+        CurrentCamera.CFrame = v1
+        CurrentCamera.Focus = v2
+    end
+
+    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    UserInputService.MouseIconEnabled = true
+end
+
+local CurrentCamera = workspace.CurrentCamera
+
+if CurrentCamera then
+    CurrentCamera.CameraType = Enum.CameraType.Scriptable
+    CurrentCamera.CFrame = v1
+    CurrentCamera.Focus = v2
+end
+
+UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+UserInputService.MouseIconEnabled = true
+RunService:BindToRenderStep("MWCameraLock", Enum.RenderPriority.Camera.Value + 1, lockCamera)
+task.spawn(function() --[[ Line: 71 | Upvalues: StarterGui (copy) ]]
+    for i, v in ipairs({
+        Enum.CoreGuiType.PlayerList,
+        Enum.CoreGuiType.Backpack,
+        Enum.CoreGuiType.Health,
+        Enum.CoreGuiType.EmotesMenu
+    }) do
+        pcall(function() --[[ Line: 73 | Upvalues: StarterGui (ref), v (copy) ]]
+            StarterGui:SetCoreGuiEnabled(v, false)
+        end)
+    end
+end)
+pcall(function() --[[ Line: 80 ]]
+    game:GetService("GuiService").TouchControlsEnabled = false
+end)
+
+local MafiaWarsUI = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("MafiaWarsUI")
+
+MafiaWarsUI.Root.InputSink = Enum.InputSink.All
+MafiaWarsUI.Root.Modals.Backdrop.Modal = true
+Sfx.init(MafiaWarsUI)
+Music.init()
+
+local t = {
+    player = LocalPlayer,
+    gui = MafiaWarsUI,
+    State = State,
+    Remotes = Remotes,
+    Config = Config,
+    GameData = GameData,
+    Util = Util,
+    Sfx = Sfx,
+    Music = Music
+}
+
+Hud.init(t)
+t.toast = Hud.toast
+t.setTabBadge = Hud.setTabBadge
+t.floatRewards = Hud.floatRewards
+Settings.init(t)
+t.openSettings = Settings.open
+FamilyChat.init(t)
+ChatTags.init()
+ProfilePopup.init(t)
+t.openPlayerProfile = ProfilePopup.open
+FamilyProfilePopup.init(t)
+t.openFamilyProfile = FamilyProfilePopup.open
+EventBanner.init(t)
+
+local t2 = {
+    Safehouse = SafehouseTab,
+    Jobs = JobsTab,
+    Ops = OpsTab,
+    Fight = FightTab,
+    Bosses = BossTab,
+    Props = PropsTab,
+    Family = FamilyTab,
+    Territory = TerritoryTab,
+    Rankings = RankingsTab,
+    Crew = CrewTab,
+    Inventory = InventoryTab,
+    Collection = CollectionTab,
+    Trade = TradeTab,
+    Heists = HeistsTab,
+    Contracts = ContractsTab,
+    Shop = ShopTab,
+    Bank = BankTab
+}
+local list = {
+    "Safehouse",
+    "Jobs",
+    "Props",
+    "Inventory",
+    "Collection",
+    "Shop",
+    "Fight",
+    "Bank",
+    "Ops",
+    "Contracts",
+    "Crew",
+    "Bosses",
+    "Family",
+    "Territory",
+    "Rankings",
+    "Trade",
+    "Heists"
+}
+
+if LocalPlayer.UserId == 10435175903 then
+    t2.Admin = AdminTab
+    t2.Blank = BlankTab
+    table.insert(list, "Admin")
+    table.insert(list, "Blank")
+end
+
+local t3 = {}
+local t4 = {}
+
+for i, v in ipairs(list) do
+    t3[v] = MafiaWarsUI.Root.Content:WaitForChild(v .. "Panel")
+    t4[v] = MafiaWarsUI.Root.SideBar:WaitForChild("Tab" .. v)
+    t2[v].init(t, t3[v])
+end
+
+if t4.Admin then
+    t4.Admin.Visible = true
+    t4.Blank.Visible = true
+end
+
+local t5 = {}
+local v3 = 259
+local v4 = 44
+local v5 = 30
+
+for i, v in ipairs(list) do
+    local UITextSizeConstraint = Instance.new("UITextSizeConstraint")
+
+    UITextSizeConstraint.MinTextSize = 1
+    UITextSizeConstraint.Parent = t4[v]
+    t5[v] = UITextSizeConstraint
+end
+
+local function refreshTabTextSize() --[[ refreshTabTextSize | Line: 184 | Upvalues: v3 (ref), v4 (ref), list (copy), t4 (copy), v5 (ref), TextService (copy), t5 (copy) ]]
+    local v1 = (1 / 0)
+    local v2 = v3 * 0.9
+    local v32 = v4
+
+    if v2 <= 0 then
+        return
+    end
+
+    for i, v in ipairs(list) do
+        local v42 = t4[v]
+        local v6 = v2 - v2 * 0.24 - math.max(v5, v2 * 0.24)
+        local X = TextService:GetTextSize(v42.Text, 100, v42.Font, Vector2.new(10000, 200)).X
+
+        v1 = math.min(v1, (math.min(v32 * 0.43999999999999995, v6 * 100 / math.max(X, 1))))
+    end
+
+    local v12 = math.max(1, (math.floor(v1)))
+
+    for i, v in ipairs(list) do
+        t5[v].MaxTextSize = v12
+    end
+end
+
+t.attackPlayer = FightTab.attack
+t.watchAttackButton = FightTab.watchAttackButton
+t.attackCooldownLeft = FightTab.cooldownLeft
+t.confirmDialog = FightTab.confirm
+PlayerList.init(t)
+t.togglePlayerList = PlayerList.toggle
+
+local v6 = Color3.fromRGB(212, 175, 55)
+local v7 = Color3.fromRGB(38, 38, 40)
+local v8 = Color3.fromRGB(20, 18, 10)
+local v9 = Color3.fromRGB(232, 226, 208)
+local v10 = Color3.fromRGB(12, 12, 13)
+local v11 = Color3.fromRGB(96, 94, 90)
+local v12 = Color3.fromRGB(34, 34, 36)
+local v13 = Color3.fromRGB(56, 56, 59)
+local v14 = UDim.new(0.24, 0)
+local t6 = {}
+local t7 = {}
+local v15 = nil
+
+local function unlockLevelOf(p1) --[[ unlockLevelOf | Line: 244 | Upvalues: Config (copy) ]]
+    return Config.TAB_UNLOCKS[p1] or 1
+end
+
+local function paintTabButton(p1) --[[ paintTabButton | Line: 248 | Upvalues: t4 (copy), t6 (copy), v10 (copy), v11 (copy), v15 (ref), v6 (copy), v7 (copy), v8 (copy), v9 (copy), v12 (copy), v13 (copy), v14 (copy), v5 (ref) ]]
+    local v1 = t4[p1]
+    local v2 = t6[p1] == true
+
+    if v2 then
+        v1.BackgroundColor3 = v10
+        v1.TextColor3 = v11
+    else
+        v1.BackgroundColor3 = p1 == v15 and v6 or v7
+        v1.TextColor3 = p1 == v15 and v8 or v9
+    end
+
+    local TabIcon = v1:FindFirstChild("TabIcon")
+
+    if TabIcon then
+        TabIcon.ImageColor3 = v1.TextColor3
+    end
+
+    local LockIcon = v1:FindFirstChild("LockIcon")
+
+    if LockIcon then
+        LockIcon.Visible = v2
+    end
+
+    local UIStroke = v1:FindFirstChildOfClass("UIStroke")
+
+    if UIStroke then
+        UIStroke.Color = v2 and v12 or v13
+    end
+
+    local UIPadding = v1:FindFirstChildOfClass("UIPadding")
+
+    if not UIPadding then
+        return
+    end
+
+    UIPadding.PaddingRight = v2 and v14 or UDim.new(0, v5)
+end
+
+local function refreshSidebarScale() --[[ refreshSidebarScale | Line: 299 | Upvalues: MafiaWarsUI (copy), v3 (ref), v4 (ref), v5 (ref), list (copy), t4 (copy), paintTabButton (copy), refreshTabTextSize (copy) ]]
+    local SideBar = MafiaWarsUI.Root.SideBar
+    local X = MafiaWarsUI.Root.AbsoluteSize.X
+
+    if X <= 0 then
+        return
+    end
+
+    local v1 = math.clamp(150 / X, 0.135, 0.24)
+    local Y = MafiaWarsUI.Root.AbsoluteSize.Y
+    local v2 = if Y > 0 then math.clamp(52 / Y, 0.115, 0.2) or 0.115 else 0.115
+    local v32 = 1 - v2
+
+    MafiaWarsUI.Root.TopBar.Size = UDim2.new(1, 0, v2, 0)
+    SideBar.Position = UDim2.new(0, 0, v2, 0)
+    SideBar.Size = UDim2.new(v1, 0, v32, 0)
+    MafiaWarsUI.Root.Content.Position = UDim2.new(v1, 0, v2, 0)
+    MafiaWarsUI.Root.Content.Size = UDim2.new(1 - v1, 0, v32, 0)
+    v3 = v1 * X
+
+    local v52 = math.min(v3 / 259, 1)
+
+    v4 = math.round(v52 * 44)
+    v5 = math.round(v52 * 30)
+
+    for i, v in ipairs(list) do
+        local v6 = t4[v]
+
+        v6.Size = UDim2.new(0.9, 0, 0, v4)
+
+        local TabIcon = v6:FindFirstChild("TabIcon")
+
+        if TabIcon then
+            TabIcon.Position = UDim2.new(0, -math.round(v52 * 8), 0.5, 0)
+        end
+
+        for i2, v7 in ipairs({ "Badge", "RefreshDot" }) do
+            local v72 = v6:FindFirstChild(v7)
+
+            if v72 then
+                v72.Position = UDim2.new(1, math.round(v52 * 26), 0.5, 0)
+            end
+        end
+
+        paintTabButton(v)
+    end
+
+    local UIListLayout = SideBar:FindFirstChildOfClass("UIListLayout")
+
+    if UIListLayout then
+        UIListLayout.Padding = UDim.new(0, (math.round(v52 * 6)))
+    end
+
+    local UIPadding = SideBar:FindFirstChildOfClass("UIPadding")
+
+    if UIPadding then
+        UIPadding.PaddingTop = UDim.new(0, (math.round(v52 * 12)))
+        UIPadding.PaddingBottom = UDim.new(0, (math.round(v52 * 12)))
+    end
+
+    refreshTabTextSize()
+end
+
+refreshSidebarScale()
+MafiaWarsUI.Root:GetPropertyChangedSignal("AbsoluteSize"):Connect(refreshSidebarScale)
+
+local LockTooltip = MafiaWarsUI.Root:WaitForChild("LockTooltip")
+
+local function showLockTooltip(p1) --[[ showLockTooltip | Line: 348 | Upvalues: MafiaWarsUI (copy), t4 (copy), LockTooltip (copy), Config (copy) ]]
+    if not MafiaWarsUI.Root.Modals.Visible then
+        local v1 = t4[p1]
+
+        LockTooltip.Title.Text = v1.Text
+        LockTooltip.Line.Text = "UNLOCKS AT LEVEL " .. (Config.TAB_UNLOCKS[p1] or 1)
+
+        local AbsolutePosition = MafiaWarsUI.Root.AbsolutePosition
+        local AbsolutePosition2 = v1.AbsolutePosition
+        local AbsoluteSize2 = v1.AbsoluteSize
+
+        LockTooltip.Position = UDim2.fromOffset(AbsolutePosition2.X + AbsoluteSize2.X - AbsolutePosition.X + 10, (math.clamp(AbsolutePosition2.Y + AbsoluteSize2.Y / 2 - AbsolutePosition.Y - LockTooltip.AbsoluteSize.Y / 2, 0, (math.max(0, MafiaWarsUI.Root.AbsoluteSize.Y - LockTooltip.AbsoluteSize.Y)))))
+        LockTooltip.Visible = true
+    end
+end
+
+local function hideLockTooltip() --[[ hideLockTooltip | Line: 364 | Upvalues: LockTooltip (copy) ]]
+    LockTooltip.Visible = false
+end
+
+MafiaWarsUI.Root.Modals:GetPropertyChangedSignal("Visible"):Connect(function() --[[ Line: 369 | Upvalues: MafiaWarsUI (copy), LockTooltip (copy) ]]
+    if not MafiaWarsUI.Root.Modals.Visible then
+        return
+    end
+
+    LockTooltip.Visible = false
+end)
+
+local function selectTab(p1) --[[ selectTab | Line: 375 | Upvalues: t6 (copy), Hud (copy), t4 (copy), Config (copy), v15 (ref), Sfx (copy), t7 (copy), list (copy), t3 (copy), paintTabButton (copy), t2 (copy), Guide (copy) ]]
+    if t6[p1] then
+        Hud.toast("error", t4[p1].Text .. " unlocks at Level " .. (Config.TAB_UNLOCKS[p1] or 1) .. ".")
+
+        return
+    end
+
+    if v15 == p1 then
+        return
+    end
+
+    if v15 then
+        Sfx.play("Panel")
+    end
+
+    v15 = p1
+    Hud.markTabViewed(p1)
+
+    if t7[p1] then
+        t7[p1] = nil
+        Hud.setTabBadge(p1, 0)
+    end
+
+    for i, v in ipairs(list) do
+        t3[v].Visible = v == p1
+        paintTabButton(v)
+    end
+
+    local v3 = t2[p1]
+
+    if v3.onShow then
+        task.spawn(v3.onShow)
+    end
+
+    Guide.noteTab(p1)
+end
+
+t.selectTab = selectTab
+
+for i, v in ipairs(list) do
+    t4[v].Activated:Connect(function() --[[ Line: 403 | Upvalues: selectTab (copy), v (copy) ]]
+        selectTab(v)
+    end)
+    t4[v].MouseEnter:Connect(function() --[[ Line: 406 | Upvalues: t6 (copy), v (copy), showLockTooltip (copy) ]]
+        if not t6[v] then
+            return
+        end
+
+        showLockTooltip(v)
+    end)
+    t4[v].MouseLeave:Connect(hideLockTooltip)
+end
+
+local t8 = {
+    Enum.KeyCode.One,
+    Enum.KeyCode.Two,
+    Enum.KeyCode.Three,
+    Enum.KeyCode.Four,
+    Enum.KeyCode.Five,
+    Enum.KeyCode.Six,
+    Enum.KeyCode.Seven,
+    Enum.KeyCode.Eight,
+    Enum.KeyCode.Nine,
+    Enum.KeyCode.Zero
+}
+
+local function tabForHotkey(p1) --[[ tabForHotkey | Line: 424 | Upvalues: list (copy), t4 (copy) ]]
+    local t = {}
+
+    for i, v in ipairs(list) do
+        if t4[v].Visible then
+            table.insert(t, v)
+        end
+    end
+
+    table.sort(t, function(p1, p2) --[[ Line: 431 | Upvalues: t4 (ref) ]]
+        return t4[p1].LayoutOrder < t4[p2].LayoutOrder
+    end)
+
+    return t[p1]
+end
+
+UserInputService.InputBegan:Connect(function(p1, p2) --[[ Line: 436 | Upvalues: MafiaWarsUI (copy), t8 (copy), tabForHotkey (copy), selectTab (copy) ]]
+    if p2 then
+        return
+    end
+
+    if MafiaWarsUI.Root.Modals.Visible then
+        return
+    end
+
+    for i, v in ipairs(t8) do
+        if p1.KeyCode == v then
+            local v1 = tabForHotkey(i)
+
+            if v1 then
+                selectTab(v1)
+            end
+
+            return
+        end
+    end
+end)
+
+local v16 = nil
+
+State.onChanged(function(p1) --[[ Line: 454 | Upvalues: v16 (ref), list (copy), t6 (copy), Config (copy), paintTabButton (copy), LockTooltip (copy), Hud (copy), t4 (copy), t7 (copy) ]]
+    local v1 = if v16 == nil then false else true
+
+    v16 = p1.level
+
+    for i, v in ipairs(list) do
+        local v2 = t6[v]
+        local v3 = if p1.level < (Config.TAB_UNLOCKS[v] or 1) then true else false
+
+        t6[v] = v3
+        paintTabButton(v)
+
+        if v2 and not v3 then
+            LockTooltip.Visible = false
+
+            if v1 then
+                Hud.toast("unlock", t4[v].Text .. " UNLOCKED")
+                t7[v] = true
+                Hud.setTabBadge(v, 1)
+            end
+        end
+    end
+end)
+selectTab("Safehouse")
+Guide.init(t)
+Remotes:WaitForChild("Sync").OnClientEvent:Connect(function(p1) --[[ Line: 477 | Upvalues: State (copy) ]]
+    State.set(p1)
+end)
+
+local function foldPingElapsed(p1, p2) --[[ foldPingElapsed | Line: 488 | Upvalues: GameData (copy) ]]
+    p1.serverNow = (p1.serverNow or os.time()) + p2
+
+    local v2 = p1.operations and p1.operations.active
+
+    if v2 then
+        for i, v in ipairs(v2) do
+            if type(v.remaining) == "number" and v.remaining > 0 then
+                v.remaining = math.max(0, v.remaining - p2)
+            end
+        end
+    end
+
+    if p1.playtime and type(p1.playtime.todaySeconds) == "number" then
+        local playtime = p1.playtime
+
+        playtime.todaySeconds = playtime.todaySeconds + p2
+    end
+
+    local sum = 0
+    local v4 = pairs
+
+    for v6, v7 in v4(p1.properties or {}) do
+        local v8 = GameData.PROPERTIES_BY_ID[v6]
+
+        if v8 and (v8.goldPerDay and (v7.owned and v7.owned > 0)) then
+            sum = sum + v8.goldPerDay * v7.owned
+        end
+    end
+
+    if sum > 0 then
+        p1.goldAcc = (p1.goldAcc or 0) + sum * p2 / 86400
+    end
+
+    p1.away = nil
+end
+
+Remotes:WaitForChild("IncomeTick").OnClientEvent:Connect(function(p1) --[[ Line: 519 | Upvalues: State (copy), foldPingElapsed (copy) ]]
+    local v1 = State.latest()
+
+    if not v1 or (type(p1) ~= "number" or not (p1 > 0)) then
+        return
+    end
+
+    local v2 = State.sinceSync()
+
+    v1.cash = v1.cash + p1
+    v1.accAge = (v1.accAge or 0) + v2
+    foldPingElapsed(v1, v2)
+    State.set(v1)
+end)
+Remotes:WaitForChild("PoolsTick").OnClientEvent:Connect(function(p1, p2, p3, p4, p5, p6) --[[ Line: 535 | Upvalues: State (copy), foldPingElapsed (copy) ]]
+    local v1 = State.latest()
+
+    if not (v1 and (v1.pools and v1.acc)) then
+        return
+    end
+
+    if type(p1) ~= "number" or (type(p2) ~= "number" or type(p3) ~= "number") then
+        return
+    end
+
+    local v2 = State.sinceSync()
+
+    v1.pools.energy = p1
+    v1.pools.stamina = p2
+    v1.pools.health = p3
+
+    if type(p4) == "number" then
+        v1.acc.energy = p4
+    end
+
+    if type(p5) == "number" then
+        v1.acc.stamina = p5
+    end
+
+    if type(p6) == "number" then
+        v1.acc.health = p6
+    end
+
+    v1.accAge = 0
+    foldPingElapsed(v1, v2)
+    State.set(v1)
+end)
+Remotes:WaitForChild("AutoRollTick").OnClientEvent:Connect(function(p1, p2) --[[ Line: 554 | Upvalues: State (copy), foldPingElapsed (copy) ]]
+    local v1 = State.latest()
+
+    if not v1 or (not v1.crew or type(p2) ~= "table") then
+        return
+    end
+
+    local v2 = State.sinceSync()
+
+    if type(p1) == "number" then
+        v1.cash = p1
+    end
+
+    v1.autoRolls = v1.autoRolls or {}
+
+    for k, v in pairs(p2) do
+        local v4 = tonumber(k)
+        local v5 = tonumber(k) and v1.crew[v4] or nil
+
+        if v5 and type(v) == "table" then
+            v5.name = v.name
+            v5.rarity = v.rarity
+            v5.atk = v.atk
+            v5.def = v.def
+            v5.rolling = true
+            v1.autoRolls[tostring(v4)] = {
+                tier = v.tier,
+                target = v.target,
+                rolls = v.rolls,
+                spent = v.spent
+            }
+        end
+    end
+
+    v1.accAge = (v1.accAge or 0) + v2
+    foldPingElapsed(v1, v2)
+    State.set(v1)
+end)
+Remotes:WaitForChild("Notify").OnClientEvent:Connect(function(p1, p2, p3) --[[ Line: 578 | Upvalues: Hud (copy) ]]
+    Hud.toast(p1, p2, p3)
+end)
