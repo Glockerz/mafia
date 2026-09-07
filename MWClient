@@ -361,6 +361,17 @@ local function rarityNames()
     return nil
 end
 local RARITY_FALLBACK = {"COMMON","UNCOMMON","RARE","EPIC","LEGENDARY","MYTHIC","SECRET","FORBIDDEN"}
+-- Highest numeric key in a (possibly sparse) crew table. #crew is WRONG when a
+-- slot in the middle is empty (crew[k]=nil after moving/reorganizing crew): Lua's
+-- # operator stops at the first hole and would skip every slot past it. Always
+-- use this to bound crew loops so empty/moved slots are still visited.
+local function crewMaxKey(t)
+    local n=0
+    if type(t)=="table" then
+        for k in pairs(t) do if type(k)=="number" and k>n then n=k end end
+    end
+    return n
+end
 local function rarityList()
     local n = rarityNames()
     if not n then return RARITY_FALLBACK end
@@ -763,7 +774,8 @@ local function refreshCrewList()
     local data=getData()
     local crew=(data and data.crew) or {}
     -- build/update a row per crew slot (skip slot 1 = you, always protected)
-    for i=2,#crew do
+    local crewN=crewMaxKey(crew)
+    for i=2,crewN do
         local m=crew[i] or {}
         local row=crewListRows[i]
         if not row then
@@ -789,7 +801,7 @@ local function refreshCrewList()
         row.paint()
     end
     -- hide rows beyond current crew size
-    for i=#crew+1,#crewListRows do if crewListRows[i] then crewListRows[i].frame.Visible=false end end
+    for i=crewN+1,#crewListRows do if crewListRows[i] then crewListRows[i].frame.Visible=false end end
 end
 do
     local rr=rowFrame(24)
@@ -982,11 +994,23 @@ local function crewSlotInScope(i)
     local hi=math.max(OPT.crewSlotMin, OPT.crewSlotMax)
     return i>=lo and i<=hi
 end
+-- Highest slot index we must iterate to. IMPORTANT: #crew is unreliable when a
+-- slot in the middle is empty (moving/reorganizing crew leaves crew[k]=nil, and
+-- Lua's # stops at the first hole), which would skip trailing empty slots. So we
+-- scan for the real max key AND, in range mode, always extend to crewSlotMax so
+-- empty slots inside your range (e.g. 14-15 after you moved them) still get rolled.
+local function crewMaxSlot(crew)
+    local n=crewMaxKey(crew)
+    if OPT.crewUseRange then
+        n=math.max(n, OPT.crewSlotMin, OPT.crewSlotMax)
+    end
+    return n
+end
 local function crewPassNative(data)
     local crew=data.crew or {}; local keep,targetIdx=buildKeepSet()
     stats.kept,stats.rolling,stats.remaining=0,0,0
     local now=os.time(); local CA=getRemote("CrewAction")
-    for i=1,#crew do
+    for i=1,crewMaxSlot(crew) do
         if _G.CrewAutoRoll_Stop then break end
         if not (OPT.protectLeader and i==1) and crewSlotInScope(i) then
             local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
@@ -1007,7 +1031,7 @@ local function crewPassManual(data)
     local crew=data.crew or {}; local keep=buildKeepSet()
     stats.kept,stats.rolling,stats.remaining=0,0,0
     local now=os.time(); local CA=getRemote("CrewAction")
-    for i=1,#crew do
+    for i=1,crewMaxSlot(crew) do
         if _G.CrewAutoRoll_Stop then break end
         if not (OPT.protectLeader and i==1) and crewSlotInScope(i) then
             local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
@@ -1667,7 +1691,7 @@ local function terrGarrisonPass(districts)
 
     -- who is eligible: user-picked, exists, not busy, not injured, not already pending
     local pool = {}
-    for i=1,#crew do
+    for i=1,crewMaxKey(crew) do
         local m = crew[i]
         if m and OPT.terrPicked[i] and m.rarity~=nil
            and m.duty==nil and (m.injuredUntil or 0)<=now
