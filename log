@@ -1,0 +1,163 @@
+[0ms] connect: pid=3132 base=0x7ff647740000
+
+[0ms] connect: handle open
+
+[0ms] connect: dm=0x22c5225da70
+
+[0ms] connect: window=0xb092e
+
+[0ms] connect: spoofInit...
+
+[0ms] validate: enter dm=0x22c5225da70 msBytecode=0x150
+
+[0ms] validate: census 500 modules (capped)
+
+[0ms] validate: phase 0 mod 0x22c645d6d00
+
+[0ms] validate: cache blob ver=9 nstr=5 nproto=1 tail=36 frame=C
+
+[0ms] validate: scratch cache 161 bytes
+
+[0ms] validate: scratch cache ok
+
+[0ms] validate: winner dumped (205 blob / 161 wire)
+
+[0ms] validate: winnerhex blob +0 527a104a5b3209e009030507726571756972650673637269707406506172656e7414506c617965724c697374436f6e74
+
+[0ms] validate: winnerhex blob +48 726f6c6c6572036e657700010200000102000ea3000000a400010000000040a4010300000020404d010124040000004d
+
+[0ms] validate: winnerhex blob +96 0101cf050000009f0002024d0100ef060000009f01010082010000070301040000004003020400002040030303040305
+
+[0ms] validate: winnerhex blob +144 000100011800040000000000000000020000000100000000000540edebcdfa3e9c0798dca96647d0d67558fa9f378487
+
+[0ms] validate: winnerhex blob +192 ea003e53d39f4b00a8dd5602d5
+
+[0ms] validate: winnerhex wire +0 09030507726571756972650673637269707406506172656e7414506c617965724c697374436f6e74726f6c6c6572036e
+
+[0ms] validate: winnerhex wire +48 657700010200000102000e410000000c000100000000400c010300000020400f010124040000000f0101cf0500000015
+
+[0ms] validate: winnerhex wire +96 0002020f0100ef0600000015010100160100000703010400000040030204000020400303030403050001000118000400
+
+[0ms] validate: winnerhex wire +144 0000000000000002000000010000000000
+
+[0ms] validate: won mod 0x22c645d6d00 (0x138, indirect, cache)
+
+[0ms] spoof: validate won (0x138, indirect, cache)
+
+[0ms] spoof: 12 candidates
+
+[0ms] spoof: matrix phase 1/4: selfpoke
+
+[0ms] spoof: SELFPOKE control (own bytes, zeroed tail)
+
+[0ms] spoof: attempt mod 0x22c64744140
+
+[0ms] spoof: selfpoke mod 0x22c64744140 2909 bytes
+
+[0ms] tryspoof: mod=0x22c64744140 havePair=1 vec=fresh
+
+[0ms] tryspoof: staged 2909 bytes at 0x22ca0d70000
+
+[16ms] tryspoof: redirect menu require -> mod 0x22c64744140 (self)
+
+[16ms] tryspoof: capabilities maxed (was 0x0)
+
+[328ms] esc: foreground confirmed on Roblox
+
+[328ms] tryspoof: poked, esc sent, waiting 4000ms
+
+[2500ms] tryspoof: waiting 2s (folder=0)
+
+[4657ms] tryspoof: waiting 4s (folder=0)
+
+[4657ms] tryspoof: tail clean (bytes untouched) (0000000000000000)
+
+[4953ms] esc: foreground confirmed on Roblox
+
+[4969ms] tryspoof: redirect restored
+
+[4969ms] tryspoof: alive=0 folder=0 status=(unread), bytes restored
+
+[4969ms] spoof: attempt failed (worker did not come alive (folder=no status=unread; require never ran our bytes (loader reject? wrong module? ESC missed?)))
+
+[4969ms] spoof: attempt mod 0x22c64743f80
+
+[4969ms] spoof: selfpoke mod 0x22c64743f80 1343 bytes
+
+[4969ms] tryspoof: mod=0x22c64743f80 havePair=1 vec=fresh
+
+[4969ms] tryspoof: staged 1343 bytes at 0x22ca0d80000
+
+[4985ms] tryspoof: redirect menu require -> mod 0x22c64743f80 (self)
+
+[4985ms] tryspoof: capabilities maxed (was 0x0)
+
+[5297ms] esc: foreground confirmed on Roblox
+
+[5297ms] tryspoof: poked, esc sent, waiting 4000ms
+
+[7453ms] tryspoof: waiting 2s (folder=0)
+
+[9610ms] tryspoof: waiting 4s (folder=0)
+
+[9610ms] tryspoof: tail clean (bytes untouched) (0000000000000000)
+
+[9907ms] esc: foreground confirmed on Roblox
+
+[9922ms] tryspoof: redirect restored
+
+[9922ms] tryspoof: alive=0 folder=0 status=(unread), bytes restored
+
+[9922ms] spoof: attempt failed (worker did not come alive (folder=no status=unread; require never ran our bytes (loader reject? wrong module? ESC missed?)))
+
+[9922ms] spoof: attempt mod 0x22c6472adc0
+
+[9922ms] spoof: selfpoke mod 0x22c6472adc0 640 bytes
+
+[9922ms] tryspoof: mod=0x22c6472adc0 havePair=1 vec=fresh
+
+[9922ms] tryspoof: staged 640 bytes at 0x22ca0d90000
+
+[9938ms] tryspoof: redirect menu require -> mod 0x22c6472adc0 (self)
+
+[9938ms] tryspoof: capabilities maxed (was 0x0)
+
+[10250ms] esc: foreground confirmed on Roblox
+
+[10250ms] tryspoof: poked, esc sent, waiting 4000ms
+
+[12407ms] tryspoof: waiting 2s (folder=0)
+
+[14563ms] tryspoof: waiting 4s (folder=0)
+
+[14563ms] tryspoof: tail clean (bytes untouched) (0000000000000000)
+
+[14875ms] esc: foreground confirmed on Roblox
+
+[14875ms] tryspoof: redirect restored
+
+[14875ms] tryspoof: alive=0 folder=0 status=(unread), bytes restored
+
+[14875ms] spoof: attempt failed (worker did not come alive (folder=no status=unread; require never ran our bytes (loader reject? wrong module? ESC missed?)))
+
+[14875ms] spoof: matrix phase 2/4: reforge
+
+[14875ms] spoof: REFORGE control (own bytes through our pipeline)
+
+[14875ms] spoof: attempt mod 0x22c64744140
+
+[14875ms] spoof: reforge mod 0x22c64744140 2909 bytes
+
+[14875ms] tryspoof: mod=0x22c64744140 havePair=1 vec=fresh
+
+[14875ms] tryspoof: staged 2909 bytes at 0x22ca0da0000
+
+[14891ms] tryspoof: redirect menu require -> mod 0x22c64744140 (self)
+
+[14891ms] tryspoof: capabilities maxed (was 0x0)
+
+[15188ms] esc: foreground confirmed on Roblox
+
+[15188ms] tryspoof: poked, esc sent, waiting 4000ms
+
+[17344ms] tryspoof: waiting 2s (folder=0)
