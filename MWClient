@@ -91,6 +91,9 @@ local OPT = {
     crewTargetName  = "MYTHIC",
     crewTier        = "street",
     crewScopeAll    = true,
+    crewUseRange    = false,      -- if true, only roll slots within [crewSlotMin, crewSlotMax]
+    crewSlotMin     = 10,         -- first slot to roll (keeps earlier slots as your defense/attack)
+    crewSlotMax     = 15,         -- last slot to roll
 
     -- Jobs
     jobsEnabled     = false,
@@ -138,6 +141,13 @@ local OPT = {
     famStaminaKeep  = 0,          -- keep this much stamina in reserve
     famCashPerks    = false,      -- buy cash perks from the family VAULT (needs Advisor+)
     famGoldPerks    = false,      -- buy gold perks from the family vault gold (needs Advisor+)
+
+    -- Bosses
+    bossEnabled     = false,
+    bossTarget      = "strongest", -- "strongest" (highest order unlocked) | "weakest" (lowest order not maxed) | "richest" (most cash)
+    bossMinHealth   = 30,          -- stop attacking if MY health <= this (avoid getting knocked out)
+    bossMinStamina  = 0,           -- keep at least this much stamina in reserve
+    bossRepeat      = true,        -- keep farming the same boss after it respawns (else move to next)
 
     -- General
     callGap         = 0.35,
@@ -221,7 +231,7 @@ end
 
 local stats = { kept=0, rolling=0, dismissed=0, hired=0, jobs=0,
                 banked=0, contracts=0, playtime=0, opsStarted=0, opsCollected=0,
-                terrClaims=0, terrAttacks=0, famPerks=0,
+                terrClaims=0, terrAttacks=0, famPerks=0, bossHits=0, bossKills=0,
                 remaining=0, limited=false }
 local function fmtMoney(n)
     n = tonumber(n) or 0
@@ -602,6 +612,14 @@ do
         function() local i=idx()+1; if i>#tiers then i=1 end; OPT.crewTier=tiers[i] end)
 end
 toggleRow("Roll all slots at once", function() return OPT.crewScopeAll end, function(v) OPT.crewScopeAll=v end)
+toggleRow("Limit to slot range", function() return OPT.crewUseRange end, function(v) OPT.crewUseRange=v end)
+cycleRow("First slot", function() return OPT.crewSlotMin end,
+    function() OPT.crewSlotMin=math.max(1,OPT.crewSlotMin-1) end,
+    function() OPT.crewSlotMin=OPT.crewSlotMin+1 end,"-","+")
+cycleRow("Last slot", function() return OPT.crewSlotMax end,
+    function() OPT.crewSlotMax=math.max(1,OPT.crewSlotMax-1) end,
+    function() OPT.crewSlotMax=OPT.crewSlotMax+1 end,"-","+")
+mklabel(rowFrame(28),"Range on: only slots First..Last are rolled; earlier slots stay as your defense/attack.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
 -- JOBS
 sectionHeader("AUTO JOBS")
@@ -798,6 +816,25 @@ toggleRow("Buy cash perks (vault)", function() return OPT.famCashPerks end, func
 toggleRow("Buy gold perks (vault)", function() return OPT.famGoldPerks end, function(v) OPT.famGoldPerks=v end)
 mklabel(rowFrame(28),"Vault perks need Advisor rank or higher.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
+-- AUTO BOSS FIGHTER
+sectionHeader("AUTO BOSS FIGHTER")
+toggleRow("Enabled", function() return OPT.bossEnabled end, function(v) OPT.bossEnabled=v end)
+do
+    local modes={"strongest","weakest","richest"}
+    local function idx() for i,v in ipairs(modes) do if v==OPT.bossTarget then return i end end return 1 end
+    cycleRow("Pick target", function() return OPT.bossTarget end,
+        function() local i=idx()-1; if i<1 then i=#modes end; OPT.bossTarget=modes[i] end,
+        function() local i=idx()+1; if i>#modes then i=1 end; OPT.bossTarget=modes[i] end)
+end
+cycleRow("Stop if health <=", function() return OPT.bossMinHealth end,
+    function() OPT.bossMinHealth=math.max(0,OPT.bossMinHealth-5) end,
+    function() OPT.bossMinHealth=OPT.bossMinHealth+5 end,"-","+")
+cycleRow("Keep stamina >=", function() return OPT.bossMinStamina end,
+    function() OPT.bossMinStamina=math.max(0,OPT.bossMinStamina-1) end,
+    function() OPT.bossMinStamina=OPT.bossMinStamina+1 end,"-","+")
+toggleRow("Keep farming (else next boss)", function() return OPT.bossRepeat end, function(v) OPT.bossRepeat=v end)
+mklabel(rowFrame(28),"Strongest = highest unlocked boss. Locked/recovering bosses are skipped.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+
 -- GENERAL
 sectionHeader("GENERAL")
 cycleRow("Call gap (s)", function() return string.format("%.2f",OPT.callGap) end,
@@ -935,13 +972,23 @@ local function buildKeepSet()
     for i=minIdx,#names do keep[i]=true end
     return keep,minIdx
 end
+-- true when slot i is allowed to be rolled given the optional slot-range limit.
+-- When crewUseRange is on, ONLY slots within [crewSlotMin, crewSlotMax] are
+-- touched, so you can keep e.g. slots 1-9 as standing defense/attack and only
+-- reroll slots 10-15.
+local function crewSlotInScope(i)
+    if not OPT.crewUseRange then return true end
+    local lo=math.min(OPT.crewSlotMin, OPT.crewSlotMax)
+    local hi=math.max(OPT.crewSlotMin, OPT.crewSlotMax)
+    return i>=lo and i<=hi
+end
 local function crewPassNative(data)
     local crew=data.crew or {}; local keep,targetIdx=buildKeepSet()
     stats.kept,stats.rolling,stats.remaining=0,0,0
     local now=os.time(); local CA=getRemote("CrewAction")
     for i=1,#crew do
         if _G.CrewAutoRoll_Stop then break end
-        if not (OPT.protectLeader and i==1) then
+        if not (OPT.protectLeader and i==1) and crewSlotInScope(i) then
             local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
             if m.rolling then stats.rolling=stats.rolling+1
             elseif m.rarity~=nil and keep[m.rarity] then stats.kept=stats.kept+1
@@ -962,7 +1009,7 @@ local function crewPassManual(data)
     local now=os.time(); local CA=getRemote("CrewAction")
     for i=1,#crew do
         if _G.CrewAutoRoll_Stop then break end
-        if not (OPT.protectLeader and i==1) then
+        if not (OPT.protectLeader and i==1) and crewSlotInScope(i) then
             local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
             if m.rolling then stats.rolling=stats.rolling+1
             elseif m.rarity~=nil and keep[m.rarity] then stats.kept=stats.kept+1
@@ -1372,6 +1419,126 @@ local function famPass()
 end
 
 ----------------------------------------------------------------
+-- BOSSES
+--   GameData.BOSSES = ordered list { id, name, level, order, city,
+--       hp, cash, crate, title, faction }
+--   data.bosses[id] = { hp, kills, respawnAt } (server state)
+--   BossAction:InvokeServer("attack", bossId) ->
+--       { ok, myPower, bossRoll, won, dmg, hitBack, bossHp, bossMaxHp,
+--         health, stamina, killed, rewards }
+--   Unlock: my level >= boss.level AND previous boss (order-1) killed >=1x
+--   Available: serverNow + sinceSync() >= respawnAt
+----------------------------------------------------------------
+local function bossList()
+    local gd=getGameData(); if not gd then return nil end
+    local ok,B=pcall(function() return gd.BOSSES end)
+    if ok and type(B)=="table" then return B end
+    return nil
+end
+
+-- is this boss unlocked for me right now (level + prior-boss requirement)?
+local function bossUnlocked(data, BOSSES, boss)
+    if (data.level or 1) < (boss.level or 1) then return false end
+    if (boss.order or 1) > 1 then
+        local prev=BOSSES[boss.order-1]
+        local pr=prev and (data.bosses or {})[prev.id]
+        if not pr or (pr.kills or 0) < 1 then return false end
+    end
+    return true
+end
+
+-- is this boss alive and attackable right now (not recovering)?
+local function bossReady(data, boss)
+    local rec=(data.bosses or {})[boss.id]
+    if not rec then return true end                 -- never fought = full hp, ready
+    local nowSrv=(data.serverNow or os.time())+sinceSync()
+    if nowSrv < (rec.respawnAt or 0) then return false end  -- still recovering
+    return true
+end
+
+-- choose the boss to fight based on strategy; returns the boss table or nil
+local function bossPickTarget(data, BOSSES)
+    local best,bestScore=nil,nil
+    for _,boss in ipairs(BOSSES) do
+        if bossUnlocked(data,BOSSES,boss) and bossReady(data,boss) then
+            -- when "keep farming" is OFF, skip bosses we've already killed at
+            -- least once (unless none are left un-killed, then fall through)
+            local rec=(data.bosses or {})[boss.id]
+            local alreadyKilled=(rec and (rec.kills or 0)>0) or false
+            if OPT.bossRepeat or not alreadyKilled then
+                local score
+                if OPT.bossTarget=="weakest"  then score=-(boss.order or 0)  -- lowest order first
+                elseif OPT.bossTarget=="richest" then score=(boss.cash or 0) -- most cash first
+                else score=(boss.order or 0) end                             -- strongest: highest order
+                if bestScore==nil or score>bestScore then best,bestScore=boss,score end
+            end
+        end
+    end
+    -- if "keep farming" is off and everything unlocked is already killed,
+    -- fall back to farming anyway so we're not idle
+    if not best and not OPT.bossRepeat then
+        for _,boss in ipairs(BOSSES) do
+            if bossUnlocked(data,BOSSES,boss) and bossReady(data,boss) then
+                local score
+                if OPT.bossTarget=="weakest"  then score=-(boss.order or 0)
+                elseif OPT.bossTarget=="richest" then score=(boss.cash or 0)
+                else score=(boss.order or 0) end
+                if bestScore==nil or score>bestScore then best,bestScore=boss,score end
+            end
+        end
+    end
+    return best
+end
+
+local function bossPass()
+    local data=getData(); if not data then return end
+    local BOSSES=bossList(); if not BOSSES then return end
+    local BA=getRemote("BossAction"); if not BA then return end
+
+    -- safety gates: don't fight while low on health or below stamina reserve
+    local health=(data.pools and data.pools.health) or 0
+    local stamina=(data.pools and data.pools.stamina) or 0
+    if health <= OPT.bossMinHealth then
+        updatePanel(("bosses: health low (%d) - waiting to heal"):format(math.floor(health)))
+        return
+    end
+    if stamina <= OPT.bossMinStamina then
+        updatePanel("bosses: stamina reserve reached - waiting")
+        return
+    end
+
+    local target=bossPickTarget(data,BOSSES)
+    if not target then
+        updatePanel("bosses: none ready (all recovering / locked)")
+        return
+    end
+
+    -- land a hit; the server returns the fight result (RNG is server-side)
+    local ok,res=pcall(function() return BA:InvokeServer("attack", target.id) end)
+    if not ok or type(res)~="table" then task.wait(OPT.callGap); return end
+    if not res.ok then
+        local msg=tostring(res.msg or ""):lower()
+        if msg:find("rate") or msg:find("slow") or msg:find("wait") or msg:find("limit") then
+            stats.limited=true; task.wait(backoff)
+            backoff=math.min(backoff*BACKOFF_GROWTH,BACKOFF_MAX)
+        elseif res.msg then updatePanel("boss: "..tostring(res.msg)) end
+        return
+    end
+    stats.limited=false; backoff=BACKOFF_START
+    stats.bossHits=stats.bossHits+1
+    if res.killed then
+        stats.bossKills=stats.bossKills+1
+        local cash=(res.rewards and res.rewards.cash) or 0
+        updatePanel(("KILLED %s! +%s"):format(target.name or target.id, fmtMoney(cash)))
+    else
+        updatePanel(("hit %s  %s dmg  (boss %s/%s, my hp %s)"):format(
+            target.name or target.id, tostring(res.dmg or 0),
+            fmtMoney(res.bossHp or 0), fmtMoney(res.bossMaxHp or 0), tostring(res.health or "?")))
+    end
+    task.wait(OPT.callGap)
+end
+
+----------------------------------------------------------------
 -- TERRITORY  (its OWN fast loop - speed matters, rivals compete)
 --   TerritoryAction("map")     -> { ok, districts[], orders }
 --   TerritoryAction("claim",id)-> grab an UNCLAIMED district
@@ -1636,6 +1803,7 @@ local function mainLoop()
             if OPT.playtimeEnabled  and not _G.CrewAutoRoll_Stop then safe("playtime", playtimePass, getData() or data) end
             if OPT.opsEnabled       and not _G.CrewAutoRoll_Stop then safe("ops", opsPass, getData() or data) end
             if OPT.famEnabled       and not _G.CrewAutoRoll_Stop then safe("family perks", famPass) end
+            if OPT.bossEnabled      and not _G.CrewAutoRoll_Stop then safe("bosses", bossPass) end
         else
             -- No data yet: the server pushes it over "Sync" periodically. It
             -- usually arrives within a few seconds of joining / of any action.
@@ -1644,7 +1812,7 @@ local function mainLoop()
             modeLbl.Text="Mode: waiting for data (Sync)..."
         end
 
-        local continuous = OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled
+        local continuous = OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled
         if OPT.crewEnabled and crewDone and not continuous then
             updatePanel("DONE - all crew targets!"); _G.CrewAutoRoll_Stop=true; break
         end
@@ -1667,7 +1835,7 @@ end
 
 btn.Activated:Connect(function()
     if _G.CrewAutoRoll_Stop then
-        if not (OPT.crewEnabled or OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled) then
+        if not (OPT.crewEnabled or OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled) then
             updatePanel("enable a module first"); return
         end
         _G.CrewAutoRoll_Stop=false
