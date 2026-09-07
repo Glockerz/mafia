@@ -1,637 +1,1713 @@
--- Script Path: game:GetService("Players").ZombieHenry5.PlayerScripts.MWClient
+--[[
+==================================================================
+  MAFIA WARS  -  AUTO SUITE                              + glass panel
+  Crew roll · Jobs · Auto-Bank · Auto-Contracts · Auto-Playtime
+==================================================================
+  Matched against the real client (Glockerz/mafia):
+    MWClient / CrewTab / JobsTab / BankTab / ContractsTab / SafehouseTab
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local StarterGui = game:GetService("StarterGui")
-local TextService = game:GetService("TextService")
-local UserInputService = game:GetService("UserInputService")
-local LocalPlayer = Players.LocalPlayer
-local MW = ReplicatedStorage:WaitForChild("MW")
-local Remotes = MW:WaitForChild("Remotes")
-local Config = require(MW:WaitForChild("Config"))
-local GameData = require(MW:WaitForChild("GameData"))
-local Util = require(MW:WaitForChild("Util"))
-local State = require(script:WaitForChild("State"))
-local Sfx = require(script:WaitForChild("Sfx"))
-local Music = require(script:WaitForChild("Music"))
-local Settings = require(script:WaitForChild("Settings"))
-local FamilyChat = require(script:WaitForChild("FamilyChat"))
-local ChatTags = require(script:WaitForChild("ChatTags"))
-local Hud = require(script:WaitForChild("Hud"))
-local SafehouseTab = require(script:WaitForChild("SafehouseTab"))
-local JobsTab = require(script:WaitForChild("JobsTab"))
-local OpsTab = require(script:WaitForChild("OpsTab"))
-local FightTab = require(script:WaitForChild("FightTab"))
-local BossTab = require(script:WaitForChild("BossTab"))
-local PropsTab = require(script:WaitForChild("PropsTab"))
-local FamilyTab = require(script:WaitForChild("FamilyTab"))
-local TerritoryTab = require(script:WaitForChild("TerritoryTab"))
-local RankingsTab = require(script:WaitForChild("RankingsTab"))
-local CrewTab = require(script:WaitForChild("CrewTab"))
-local InventoryTab = require(script:WaitForChild("InventoryTab"))
-local CollectionTab = require(script:WaitForChild("CollectionTab"))
-local TradeTab = require(script:WaitForChild("TradeTab"))
-local HeistsTab = require(script:WaitForChild("HeistsTab"))
-local ContractsTab = require(script:WaitForChild("ContractsTab"))
-local BankTab = require(script:WaitForChild("BankTab"))
-local ShopTab = require(script:WaitForChild("ShopTab"))
-local AdminTab = require(script:WaitForChild("AdminTab"))
-local BlankTab = require(script:WaitForChild("BlankTab"))
-local PlayerList = require(script:WaitForChild("PlayerList"))
-local ProfilePopup = require(script:WaitForChild("ProfilePopup"))
-local FamilyProfilePopup = require(script:WaitForChild("FamilyProfilePopup"))
-local Guide = require(script:WaitForChild("Guide"))
-local EventBanner = require(script:WaitForChild("EventBanner"))
-local v1 = CFrame.new(0, 60, 0, 1, 0, 0, 0, 0, 1, 0, -1, 0)
-local v2 = v1 * CFrame.new(0, 0, -10)
+  REMOTES USED (all read/fire live data -> tab-independent via getgc):
+    Crew      : Remotes.CrewAction("autoroll"|"dismiss"|"hire", ...)
+    Jobs      : Remotes.DoJob(jobId)
+    Bank      : Remotes.Deposit(amount)          -- fee is server-side, can't be removed
+    Contracts : Remotes.ContractAction("claim"|"claimweekly"|"claimbonus"|"claimweeklybonus", i)
+    Playtime  : Remotes.ClaimLadder(rungIndex)
 
-local function lockCamera() --[[ lockCamera | Line: 57 | Upvalues: v1 (copy), v2 (copy), UserInputService (copy) ]]
-    local CurrentCamera = workspace.CurrentCamera
+  NOTE ON THE BANK FEE: the deposit fee is applied on the SERVER; the
+  client only sends the amount. It cannot be bypassed. Auto-Bank just
+  minimizes how long cash sits stealable. (The only zero-fee path is the
+  in-game "No Bank Fees" pass -> data.derived.noBankFees.)
 
-    if CurrentCamera then
-        CurrentCamera.CameraType = Enum.CameraType.Scriptable
-        CurrentCamera.CFrame = v1
-        CurrentCamera.Focus = v2
+  Stop from console:  _G.CrewAutoRoll_Stop = true
+
+  AUTO-INJECT / LOAD GUARD:
+    * Refuses to run twice in the same client (kills the old GUI + loops
+      first, so re-running just refreshes instead of stacking).
+    * Waits for the game to finish loading before touching remotes.
+    * Re-injects itself automatically after a teleport / server hop using
+      the executor's queue_on_teleport, so grinding survives rejoins.
+      Set _G.AutoSuite_NoRequeue = true before running to disable that.
+==================================================================
+]]
+
+----------------------------------------------------------------
+-- LOAD GUARD + AUTO-INJECT (survive re-runs and teleports)
+----------------------------------------------------------------
+-- 1) wait until the game is actually loaded before we do anything
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- 2) single-instance guard. If a previous copy is running, ask it to stop
+--    and tear down its GUI so this fresh run cleanly replaces it, instead
+--    of erroring out or stacking two GUIs / two loops on top of each other.
+do
+    local genv = (getgenv and getgenv()) or _G
+    if genv.AutoSuite_LOADED then
+        _G.CrewAutoRoll_Stop = true                 -- signal old loops to end
+        pcall(function()
+            local pg = game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui")
+            local gui = pg and pg:FindFirstChild("AutoSuiteGUI")
+            if gui then gui:Destroy() end
+        end)
+        task.wait(0.2)                               -- let old loops notice the stop flag
     end
-
-    UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-    UserInputService.MouseIconEnabled = true
+    genv.AutoSuite_LOADED = true
 end
 
-local CurrentCamera = workspace.CurrentCamera
-
-if CurrentCamera then
-    CurrentCamera.CameraType = Enum.CameraType.Scriptable
-    CurrentCamera.CFrame = v1
-    CurrentCamera.Focus = v2
+-- 3) auto re-inject after teleport / server hop. Executors expose one of
+--    queue_on_teleport / queueonteleport / syn.queue_on_teleport. We queue
+--    whatever bootstrap the user launched with:
+--      _G.AutoSuite_SelfURL  -> set this before running when you load via
+--                               loadstring(game:HttpGet(url)); it re-fetches.
+--    otherwise, if the script was saved to disk we re-run that file;
+--    otherwise re-injection is skipped (nothing safe to re-run).
+do
+    -- default source URL for re-injection (override by setting
+    -- _G.AutoSuite_SelfURL before running if you host it elsewhere)
+    if type(_G.AutoSuite_SelfURL) ~= "string" or _G.AutoSuite_SelfURL == "" then
+        _G.AutoSuite_SelfURL = "https://raw.githubusercontent.com/Glockerz/mafia/refs/heads/main/MWClient"
+    end
+    if not _G.AutoSuite_NoRequeue then
+        local queue = queue_on_teleport
+            or (syn and syn.queue_on_teleport)
+            or queueonteleport
+        if type(queue) == "function" then
+            local boot
+            if type(_G.AutoSuite_SelfURL) == "string" and _G.AutoSuite_SelfURL ~= "" then
+                boot = ('loadstring(game:HttpGet(%q))()'):format(_G.AutoSuite_SelfURL)
+            elseif readfile and isfile and isfile("MafiaWarsAutoSuite.lua") then
+                boot = 'loadstring(readfile("MafiaWarsAutoSuite.lua"))()'
+            end
+            if boot then pcall(queue, boot) end
+        end
+    end
 end
 
-UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-UserInputService.MouseIconEnabled = true
-RunService:BindToRenderStep("MWCameraLock", Enum.RenderPriority.Camera.Value + 1, lockCamera)
-task.spawn(function() --[[ Line: 71 | Upvalues: StarterGui (copy) ]]
-    for i, v in ipairs({
-        Enum.CoreGuiType.PlayerList,
-        Enum.CoreGuiType.Backpack,
-        Enum.CoreGuiType.Health,
-        Enum.CoreGuiType.EmotesMenu
-    }) do
-        pcall(function() --[[ Line: 73 | Upvalues: StarterGui (ref), v (copy) ]]
-            StarterGui:SetCoreGuiEnabled(v, false)
+----------------------------------------------------------------
+-- DEFAULT OPTIONS (all editable live in the panel)
+----------------------------------------------------------------
+local OPT = {
+    -- Crew
+    crewEnabled     = true,
+    crewTargetName  = "MYTHIC",
+    crewTier        = "street",
+    crewScopeAll    = true,
+
+    -- Jobs
+    jobsEnabled     = false,
+    jobsStrategy    = "highest",
+    jobsReserve     = 0,
+
+    -- Bank
+    bankEnabled     = false,
+    bankThreshold   = 1e6,   -- deposit once on-hand cash reaches this
+    bankKeep        = 0,     -- leave this much on hand (0 = deposit all)
+
+    -- Contracts
+    contractsEnabled= false,
+
+    -- Playtime ladder
+    playtimeEnabled = false,
+
+    -- Ops
+    opsEnabled      = false,
+    opsStrategy     = "cash/sec", -- "cash/sec" | "xp/sec" | "cash" | "xp" | "fastest" | "crate"
+    opsMaxCost      = 1e12,       -- don't start ops costing more than this
+
+    -- Territory
+    terrEnabled     = false,
+    terrClaim       = true,       -- grab unclaimed districts
+    terrAttack      = false,      -- attack rival districts
+    terrTarget      = "weakest",  -- "weakest" | "highest tier" | "cheapest claim"
+    terrPoll        = 0.4,        -- fast poll (seconds) - speed matters, others compete
+    terrActionGap   = 0.15,       -- pacing between territory remote calls (anti rate-limit)
+    terrMaxAttackCost = 10,       -- max stamina PER ATTACK (skip a district if its cost is higher)
+    terrMinStamina  = 0,          -- keep at least this much of MY stamina in reserve (don't attack below it)
+    terrMaxDefenders = 3,         -- only attack districts with FEWER than this many troops stationed
+    terrUseWhitelist = false,     -- if true, ONLY attack districts on the whitelist
+    terrWhitelist    = {},        -- [district name] = true : districts allowed to be attacked
+    -- Territory garrison (auto-assign crew to districts you hold)
+    terrGarrison    = false,      -- auto-station selected crew on your districts
+    terrGarrisonFill= true,       -- true = fill to garrison cap; false = use terrGarrisonNum
+    terrGarrisonNum = 1,          -- members per district when not filling to cap
+    terrPicked      = {},         -- [crew slot index] = true : members chosen to be stationed
+
+    -- Family perks
+    famEnabled      = false,
+    famStamina      = true,       -- feed YOUR stamina into a stamina perk track
+    famStaminaTarget= "auto",     -- "auto" (lowest level) or a specific track id
+    famStaminaKeep  = 0,          -- keep this much stamina in reserve
+    famCashPerks    = false,      -- buy cash perks from the family VAULT (needs Advisor+)
+    famGoldPerks    = false,      -- buy gold perks from the family vault gold (needs Advisor+)
+
+    -- General
+    callGap         = 0.35,
+    loopDelay       = 0.6,
+    protectLeader   = true,       -- ALWAYS on (slot 1 = you); not user-toggleable
+    autoSaveConfig  = false,      -- auto-save settings whenever you press Start/Stop
+}
+
+local BACKOFF_START, BACKOFF_MAX, BACKOFF_GROWTH = 2.0, 15.0, 1.6
+
+----------------------------------------------------------------
+-- SERVICES / STATE
+----------------------------------------------------------------
+_G.CrewAutoRoll_Stop = true
+
+local Players          = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+local player           = Players.LocalPlayer
+
+local function log(...) print("[AutoSuite]", ...) end
+
+----------------------------------------------------------------
+-- CONFIG PERSISTENCE (save/load OPT to executor filesystem)
+----------------------------------------------------------------
+local CONFIG_FOLDER = "MafiaWarsAutoSuite_Configs"
+local CONFIG_NAME   = "default"   -- change via the GUI text box
+if makefolder and isfolder and not isfolder(CONFIG_FOLDER) then
+    pcall(function() makefolder(CONFIG_FOLDER) end)
+end
+
+local function configPath() return CONFIG_FOLDER.."/"..(CONFIG_NAME or "default")..".json" end
+
+-- refreshers set later by the GUI so a load repaints every control
+local guiRefreshers = {}
+local function runGuiRefreshers()
+    for _, fn in ipairs(guiRefreshers) do pcall(fn) end
+end
+
+local function SaveConfiguration()
+    if not writefile then log("config: writefile not supported by this executor"); return false end
+    -- shallow copy OPT; terrPicked (numeric-keyed) becomes a string-keyed object in JSON
+    local data = {}
+    for k, v in pairs(OPT) do
+        if type(v) == "table" then
+            local t = {}
+            for kk, vv in pairs(v) do t[tostring(kk)] = vv end
+            data[k] = t
+        else
+            data[k] = v
+        end
+    end
+    local ok, enc = pcall(function() return HttpService:JSONEncode(data) end)
+    if not ok then log("config: encode failed", enc); return false end
+    local wok = pcall(function() writefile(configPath(), enc) end)
+    if wok then log("config saved -> "..configPath()) else log("config: write failed") end
+    return wok
+end
+
+local function LoadConfiguration()
+    if not (readfile and isfile) then log("config: readfile not supported"); return false end
+    if not isfile(configPath()) then log("config: no file at "..configPath()); return false end
+    local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(configPath())) end)
+    if not (ok and type(decoded) == "table") then log("config: decode failed"); return false end
+    for k, v in pairs(decoded) do
+        if OPT[k] ~= nil then
+            if k == "terrPicked" and type(v) == "table" then
+                -- restore numeric crew-slot keys
+                local t = {}
+                for kk, vv in pairs(v) do t[tonumber(kk) or kk] = vv end
+                OPT.terrPicked = t
+            else
+                OPT[k] = v
+            end
+        end
+    end
+    log("config loaded <- "..configPath())
+    runGuiRefreshers()
+    return true
+end
+
+local stats = { kept=0, rolling=0, dismissed=0, hired=0, jobs=0,
+                banked=0, contracts=0, playtime=0, opsStarted=0, opsCollected=0,
+                terrClaims=0, terrAttacks=0, famPerks=0,
+                remaining=0, limited=false }
+local function fmtMoney(n)
+    n = tonumber(n) or 0
+    if n>=1e12 then return string.format("%.0fT", n/1e12) end
+    if n>=1e9  then return string.format("%.0fB", n/1e9)  end
+    if n>=1e6  then return string.format("%.0fM", n/1e6)  end
+    if n>=1e3  then return string.format("%.0fK", n/1e3)  end
+    return tostring(math.floor(n))
+end
+
+
+----------------------------------------------------------------
+-- DATA LAYER
+--   Config / GameData / Remotes: require the game's shared modules
+--     (these are the SAME objects for every VM, so they work).
+--   LIVE PLAYER DATA: Xeno runs in a separate Luau VM, so getgc and
+--     require(MWClient.State) canNOT see the game's live State.data.
+--     BUT the server pushes the full data table to the client over the
+--     "Sync" RemoteEvent. We connect our OWN listener and cache it.
+--     This is tab-independent and needs no memory reading.
+----------------------------------------------------------------
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config, GameData, RemotesFolder
+local function ensureModules()
+    if Config and GameData and RemotesFolder then return true end
+    local MW = ReplicatedStorage:FindFirstChild("MW") or ReplicatedStorage:WaitForChild("MW", 5)
+    if MW then
+        RemotesFolder = RemotesFolder or MW:FindFirstChild("Remotes")
+        if not Config then
+            local m=MW:FindFirstChild("Config");   if m then local ok,r=pcall(require,m); if ok then Config=r end end
+        end
+        if not GameData then
+            local m=MW:FindFirstChild("GameData"); if m then local ok,r=pcall(require,m); if ok then GameData=r end end
+        end
+    end
+    return (Config~=nil) and (GameData~=nil) and (RemotesFolder~=nil)
+end
+
+-- get a remote by name (defined early so the Sync listener can use it)
+local function getRemote(name)
+    ensureModules()
+    if RemotesFolder then local r=RemotesFolder:FindFirstChild(name); if r then return r end end
+    local MW = ReplicatedStorage:FindFirstChild("MW")
+    if MW then local rf=MW:FindFirstChild("Remotes"); if rf then local r=rf:FindFirstChild(name); if r then return r end end end
+    for _, v in ipairs(game:GetDescendants()) do
+        if v.Name==name and (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) then return v end
+    end
+    return nil
+end
+
+-- LIVE DATA cache, fed by the server's Sync RemoteEvent
+local LIVE = nil            -- last full data table the server sent
+local LIVE_AT = 0           -- os.clock() when we received it
+local syncHooked = false
+local function hookSync()
+    if syncHooked then return end
+    -- Full snapshot pushes
+    local sync = getRemote("Sync")
+    if sync and sync:IsA("RemoteEvent") then
+        sync.OnClientEvent:Connect(function(payload)
+            if type(payload)=="table" then LIVE = payload; LIVE_AT = os.clock() end
+        end)
+        syncHooked = true
+    end
+    -- Incremental crew updates while auto-rolling (name/rarity/rolling per slot)
+    local art = getRemote("AutoRollTick")
+    if art and art:IsA("RemoteEvent") then
+        art.OnClientEvent:Connect(function(cash, updates)
+            if type(LIVE)~="table" then return end
+            if type(cash)=="number" then LIVE.cash = cash end
+            if type(updates)=="table" and type(LIVE.crew)=="table" then
+                for k, v in pairs(updates) do
+                    local idx = tonumber(k)
+                    local slot = idx and LIVE.crew[idx]
+                    if slot and type(v)=="table" then
+                        slot.name = v.name; slot.rarity = v.rarity
+                        slot.atk = v.atk; slot.def = v.def; slot.rolling = true
+                    end
+                end
+                LIVE_AT = os.clock()
+            end
         end)
     end
+    -- Income / pools ticks keep cash & energy fresh for bank/jobs
+    local inc = getRemote("IncomeTick")
+    if inc and inc:IsA("RemoteEvent") then
+        inc.OnClientEvent:Connect(function(delta)
+            if type(LIVE)=="table" and type(delta)=="number" and type(LIVE.cash)=="number" then
+                LIVE.cash = LIVE.cash + delta; LIVE_AT = os.clock()
+            end
+        end)
+    end
+    local pools = getRemote("PoolsTick")
+    if pools and pools:IsA("RemoteEvent") then
+        pools.OnClientEvent:Connect(function(energy, stamina, health)
+            if type(LIVE)=="table" and type(LIVE.pools)=="table" then
+                if type(energy)=="number" then LIVE.pools.energy = energy end
+                if type(stamina)=="number" then LIVE.pools.stamina = stamina end
+                if type(health)=="number" then LIVE.pools.health = health end
+                LIVE_AT = os.clock()
+            end
+        end)
+    end
+end
+-- Also try to pull an immediate snapshot so we don't wait for the next tick.
+-- Several actions return the fresh data table; a harmless one is a no-op query
+-- if the game exposes it, otherwise we just wait for the first Sync push.
+local function primeData()
+    hookSync()
+    -- some builds echo current data on any ContractAction/no-op; skip unsafe calls.
+end
+
+local function getData()
+    hookSync()
+    return (type(LIVE)=="table") and LIVE or nil
+end
+local function sinceSync()
+    if LIVE_AT==0 then return 0 end
+    return os.clock()-LIVE_AT
+end
+
+-- rarity helpers
+local function rarityNames()
+    ensureModules()
+    if GameData then local ok,n=pcall(function() return GameData.RARITY_NAMES end); if ok then return n end end
+    return nil
+end
+local RARITY_FALLBACK = {"COMMON","UNCOMMON","RARE","EPIC","LEGENDARY","MYTHIC","SECRET","FORBIDDEN"}
+local function rarityList()
+    local n = rarityNames()
+    if not n then return RARITY_FALLBACK end
+    local t = {}; for i=1,#n do t[i]=string.upper(n[i] or ("R"..i)) end; return t
+end
+local function nameToIndex(name)
+    local n=rarityNames(); name=string.upper(name)
+    if n then for i=1,#n do if string.upper(n[i] or "")==name then return i end end end
+    for i,v in ipairs(RARITY_FALLBACK) do if v==name then return i end end
+    return nil
+end
+local function indexToName(i) local l=rarityList(); return (i and l[i]) or ("R"..tostring(i)) end
+local function hasNativeAutoRoll() local d=getData(); return d~=nil and (d.derived or {}).autoRoll==true end
+local function hireTierIds()
+    ensureModules()
+    if Config then
+        local ok,tiers=pcall(function() return Config.CREW.hireTiers end)
+        if ok and type(tiers)=="table" then
+            local ids={}; for _,t in ipairs(tiers) do if t.id then table.insert(ids,t.id) end end
+            if #ids>0 then return ids end
+        end
+    end
+    return {"street","organized","syndicate"}
+end
+local function configCount(pathA, fallback)
+    ensureModules()
+    if Config then
+        local ok,v=pcall(function() return #Config.CONTRACTS[pathA] end)
+        if ok and v and v>0 then return v end
+    end
+    return fallback
+end
+-- expose for modules that read GameData/Config directly
+local function getGameData() ensureModules(); return GameData end
+local function getConfig()   ensureModules(); return Config end
+
+----------------------------------------------------------------
+-- UI FALLBACK
+----------------------------------------------------------------
+local function getPanelScroller(panelName, subPath)
+    local pg=player:FindFirstChild("PlayerGui"); if not pg then return nil end
+    local ok,s=pcall(function()
+        local panel=pg:WaitForChild("MafiaWarsUI",5).Root.Content[panelName]
+        if subPath then for _,seg in ipairs(subPath) do panel=panel[seg] end end
+        return panel
+    end)
+    return ok and s or nil
+end
+local function fireButton(b)
+    if not b then return end
+    if typeof(getconnections)=="function" then
+        for _,c in ipairs(getconnections(b.Activated)) do pcall(function() c:Fire() end) end
+    elseif typeof(firesignal)=="function" then pcall(function() firesignal(b.Activated) end) end
+end
+
+----------------------------------------------------------------
+-- GLASS PANEL
+----------------------------------------------------------------
+local function makeGlassFrame(parent, size, pos)
+    local f=Instance.new("Frame")
+    f.BackgroundColor3=Color3.fromRGB(26,30,44); f.BackgroundTransparency=0.15
+    f.Size=size; f.Position=pos; f.AnchorPoint=Vector2.new(0.5,0.5); f.Parent=parent
+    Instance.new("UICorner",f).CornerRadius=UDim.new(0,18)
+    local tint=Instance.new("UIGradient",f); tint.Rotation=90
+    tint.Color=ColorSequence.new(Color3.fromRGB(78,88,120),Color3.fromRGB(16,19,30))
+    tint.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.05),NumberSequenceKeypoint.new(1,0.32)})
+    local sheen=Instance.new("Frame"); sheen.BackgroundColor3=Color3.fromRGB(255,255,255)
+    sheen.BorderSizePixel=0; sheen.Size=UDim2.new(1,0,0.4,0); sheen.ZIndex=0; sheen.Parent=f
+    Instance.new("UICorner",sheen).CornerRadius=UDim.new(0,18)
+    local sg=Instance.new("UIGradient",sheen); sg.Rotation=90
+    sg.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.8),NumberSequenceKeypoint.new(1,1)})
+    local stroke=Instance.new("UIStroke",f); stroke.Color=Color3.fromRGB(255,255,255)
+    stroke.Thickness=1.4; stroke.Transparency=0.55; stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
+    local st=Instance.new("UIGradient",stroke); st.Rotation=90
+    st.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.25),NumberSequenceKeypoint.new(1,0.8)})
+    local glow=Instance.new("ImageLabel"); glow.BackgroundTransparency=1; glow.Image="rbxassetid://5028857084"
+    glow.ImageColor3=Color3.fromRGB(0,0,0); glow.ImageTransparency=0.55; glow.ScaleType=Enum.ScaleType.Slice
+    glow.SliceCenter=Rect.new(24,24,276,276); glow.Size=UDim2.new(1,40,1,40)
+    glow.Position=UDim2.fromScale(0.5,0.5); glow.AnchorPoint=Vector2.new(0.5,0.5); glow.ZIndex=-1; glow.Parent=f
+    return f
+end
+
+-- stop any previous run and remove its panel (prevents duplicate loops fighting)
+_G.CrewAutoRoll_Stop = true
+pcall(function()
+    local holders = { (gethui and gethui()) or nil, game:GetService("CoreGui"), player:FindFirstChild("PlayerGui") }
+    for _, h in ipairs(holders) do
+        if h then
+            local old = h:FindFirstChild("AutoSuiteGUI")
+            if old then old:Destroy() end
+        end
+    end
 end)
-pcall(function() --[[ Line: 80 ]]
-    game:GetService("GuiService").TouchControlsEnabled = false
-end)
+task.wait(0.15) -- let the old loop notice the stop flag
 
-local MafiaWarsUI = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("MafiaWarsUI")
+local gui=Instance.new("ScreenGui")
+gui.Name="AutoSuiteGUI"; gui.ResetOnSpawn=false
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; gui.IgnoreGuiInset=true
+do local ok=pcall(function() gui.Parent=(gethui and gethui()) or game:GetService("CoreGui") end)
+   if not ok then gui.Parent=player:WaitForChild("PlayerGui") end end
 
-MafiaWarsUI.Root.InputSink = Enum.InputSink.All
-MafiaWarsUI.Root.Modals.Backdrop.Modal = true
-Sfx.init(MafiaWarsUI)
-Music.init()
+local win=makeGlassFrame(gui, UDim2.fromOffset(360, 640), UDim2.fromScale(0.5,0.5))
 
-local t = {
-    player = LocalPlayer,
-    gui = MafiaWarsUI,
-    State = State,
-    Remotes = Remotes,
-    Config = Config,
-    GameData = GameData,
-    Util = Util,
-    Sfx = Sfx,
-    Music = Music
-}
+local ACCENT=Color3.fromRGB(140,210,255)
+local TXT=Color3.fromRGB(232,236,244)
+local SUBTXT=Color3.fromRGB(165,173,190)
+local ONCOL=Color3.fromRGB(46,160,90)
+local OFFCOL=Color3.fromRGB(120,60,60)
+local CTRLBG=Color3.fromRGB(54,60,80)
 
-Hud.init(t)
-t.toast = Hud.toast
-t.setTabBadge = Hud.setTabBadge
-t.floatRewards = Hud.floatRewards
-Settings.init(t)
-t.openSettings = Settings.open
-FamilyChat.init(t)
-ChatTags.init()
-ProfilePopup.init(t)
-t.openPlayerProfile = ProfilePopup.open
-FamilyProfilePopup.init(t)
-t.openFamilyProfile = FamilyProfilePopup.open
-EventBanner.init(t)
-
-local t2 = {
-    Safehouse = SafehouseTab,
-    Jobs = JobsTab,
-    Ops = OpsTab,
-    Fight = FightTab,
-    Bosses = BossTab,
-    Props = PropsTab,
-    Family = FamilyTab,
-    Territory = TerritoryTab,
-    Rankings = RankingsTab,
-    Crew = CrewTab,
-    Inventory = InventoryTab,
-    Collection = CollectionTab,
-    Trade = TradeTab,
-    Heists = HeistsTab,
-    Contracts = ContractsTab,
-    Shop = ShopTab,
-    Bank = BankTab
-}
-local list = {
-    "Safehouse",
-    "Jobs",
-    "Props",
-    "Inventory",
-    "Collection",
-    "Shop",
-    "Fight",
-    "Bank",
-    "Ops",
-    "Contracts",
-    "Crew",
-    "Bosses",
-    "Family",
-    "Territory",
-    "Rankings",
-    "Trade",
-    "Heists"
-}
-
-if LocalPlayer.UserId == 10435175903 then
-    t2.Admin = AdminTab
-    t2.Blank = BlankTab
-    table.insert(list, "Admin")
-    table.insert(list, "Blank")
+local function mklabel(parent,text,pos,size,tsize,color,bold,align,zi)
+    local l=Instance.new("TextLabel"); l.BackgroundTransparency=1
+    l.Position=pos; l.Size=size; l.Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.TextSize=tsize; l.TextColor3=color or TXT; l.Text=text
+    l.TextXAlignment=align or Enum.TextXAlignment.Left; l.TextYAlignment=Enum.TextYAlignment.Center
+    l.TextTruncate=Enum.TextTruncate.AtEnd; l.ZIndex=zi or 5; l.Parent=parent
+    return l
 end
 
-local t3 = {}
-local t4 = {}
+mklabel(win,"MAFIA WARS AUTO SUITE", UDim2.new(0,16,0,10), UDim2.new(1,-32,0,24), 19, ACCENT, true, Enum.TextXAlignment.Center)
+local modeLbl  = mklabel(win,"Mode: --",     UDim2.new(0,16,0,36), UDim2.new(1,-32,0,15),12,SUBTXT,false,Enum.TextXAlignment.Center)
+local statusLbl= mklabel(win,"Status: idle", UDim2.new(0,16,0,54), UDim2.new(1,-32,0,18),14,Color3.fromRGB(205,210,220),true)
+local cnt1=mklabel(win,"", UDim2.new(0,16,0,76), UDim2.new(1,-32,0,14),11,Color3.fromRGB(180,200,180))
+local cnt2=mklabel(win,"", UDim2.new(0,16,0,90), UDim2.new(1,-32,0,14),11,Color3.fromRGB(190,190,205))
+local cnt3=mklabel(win,"", UDim2.new(0,16,0,104),UDim2.new(1,-32,0,14),11,Color3.fromRGB(200,190,180))
+local cnt4=mklabel(win,"", UDim2.new(0,16,0,118),UDim2.new(1,-32,0,14),11,Color3.fromRGB(200,180,200))
 
-for i, v in ipairs(list) do
-    t3[v] = MafiaWarsUI.Root.Content:WaitForChild(v .. "Panel")
-    t4[v] = MafiaWarsUI.Root.SideBar:WaitForChild("Tab" .. v)
-    t2[v].init(t, t3[v])
+local closeBtn=Instance.new("TextButton"); closeBtn.Size=UDim2.fromOffset(26,26)
+closeBtn.Position=UDim2.new(1,-32,0,8); closeBtn.Font=Enum.Font.GothamBold; closeBtn.TextSize=16
+closeBtn.Text="X"; closeBtn.TextColor3=Color3.fromRGB(235,235,235); closeBtn.BackgroundColor3=Color3.fromRGB(180,70,70)
+closeBtn.ZIndex=8; closeBtn.Parent=win
+Instance.new("UICorner",closeBtn).CornerRadius=UDim.new(1,0)
+
+local scroll=Instance.new("ScrollingFrame")
+scroll.BackgroundTransparency=1; scroll.BorderSizePixel=0
+scroll.Position=UDim2.new(0,12,0,138); scroll.Size=UDim2.new(1,-24,1,-210)
+scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+scroll.ScrollBarThickness=4; scroll.ScrollBarImageColor3=Color3.fromRGB(150,160,180)
+scroll.ZIndex=5; scroll.Parent=win
+local layout=Instance.new("UIListLayout",scroll)
+layout.Padding=UDim.new(0,6); layout.SortOrder=Enum.SortOrder.LayoutOrder
+
+local orderN=0
+local function nextOrder() orderN=orderN+1; return orderN end
+local function sectionHeader(text)
+    local l=Instance.new("TextLabel"); l.BackgroundTransparency=1
+    l.Size=UDim2.new(1,0,0,22); l.Font=Enum.Font.GothamBold; l.TextSize=13
+    l.TextColor3=ACCENT; l.Text=text; l.TextXAlignment=Enum.TextXAlignment.Left
+    l.LayoutOrder=nextOrder(); l.ZIndex=6; l.Parent=scroll
+    local line=Instance.new("Frame",l); line.BackgroundColor3=ACCENT; line.BackgroundTransparency=0.6
+    line.BorderSizePixel=0; line.AnchorPoint=Vector2.new(0,1); line.Position=UDim2.new(0,0,1,0)
+    line.Size=UDim2.new(1,0,0,1); line.ZIndex=6
+end
+local function rowFrame(h)
+    local r=Instance.new("Frame"); r.BackgroundColor3=Color3.fromRGB(255,255,255)
+    r.BackgroundTransparency=0.94; r.BorderSizePixel=0; r.Size=UDim2.new(1,0,0,h or 30)
+    r.LayoutOrder=nextOrder(); r.ZIndex=5; r.Parent=scroll
+    Instance.new("UICorner",r).CornerRadius=UDim.new(0,8)
+    return r
+end
+local function smallBtn(parent,text,w)
+    local b=Instance.new("TextButton"); b.Size=UDim2.fromOffset(w or 24,24)
+    b.Font=Enum.Font.GothamBold; b.TextSize=14; b.Text=text; b.TextColor3=TXT
+    b.BackgroundColor3=CTRLBG; b.AutoButtonColor=true; b.ZIndex=6; b.Parent=parent
+    Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
+    return b
+end
+local function toggleRow(text,get,set)
+    local r=rowFrame(30)
+    mklabel(r,text, UDim2.new(0,10,0,0), UDim2.new(1,-96,1,0),13,TXT,false,nil,6)
+    local b=Instance.new("TextButton"); b.AnchorPoint=Vector2.new(1,0.5)
+    b.Position=UDim2.new(1,-6,0.5,0); b.Size=UDim2.fromOffset(72,24)
+    b.Font=Enum.Font.GothamBold; b.TextSize=13; b.TextColor3=Color3.fromRGB(255,255,255)
+    b.ZIndex=6; b.Parent=r; Instance.new("UICorner",b).CornerRadius=UDim.new(0,6)
+    local function paint() local v=get(); b.Text=v and "ON" or "OFF"; b.BackgroundColor3=v and ONCOL or OFFCOL end
+    b.Activated:Connect(function() set(not get()); paint() end); paint()
+    table.insert(guiRefreshers, paint)
+    return r
+end
+local function cycleRow(text,getVal,onPrev,onNext,prevSym,nextSym)
+    local r=rowFrame(30)
+    mklabel(r,text, UDim2.new(0,10,0,0), UDim2.new(1,-160,1,0),13,TXT,false,nil,6)
+    local prev=smallBtn(r,prevSym or "<",26); prev.AnchorPoint=Vector2.new(0,0.5); prev.Position=UDim2.new(1,-152,0.5,0)
+    local val=mklabel(r,tostring(getVal()),UDim2.new(1,-124,0.5,0),UDim2.fromOffset(96,24),12,ACCENT,true,Enum.TextXAlignment.Center,6)
+    val.AnchorPoint=Vector2.new(0,0.5)
+    local nxt=smallBtn(r,nextSym or ">",26); nxt.AnchorPoint=Vector2.new(1,0.5); nxt.Position=UDim2.new(1,-6,0.5,0)
+    local function refresh() val.Text=tostring(getVal()) end
+    prev.Activated:Connect(function() onPrev(); refresh() end)
+    nxt.Activated:Connect(function() onNext(); refresh() end)
+    table.insert(guiRefreshers, refresh)
+    return r,refresh
 end
 
-if t4.Admin then
-    t4.Admin.Visible = true
-    t4.Blank.Visible = true
+-- parse a typed money string: accepts 1000000, 1,000,000, 1m, 2.5k, 3b, 1t, $5M
+local function parseMoney(s)
+    s=tostring(s):lower():gsub("[%s,%$]","")
+    if s=="" then return nil end
+    local num,suf=s:match("^([%d%.]+)([kmbt]?)$")
+    if not num then return nil end
+    local n=tonumber(num); if not n then return nil end
+    local mult=({k=1e3,m=1e6,b=1e9,t=1e12})[suf] or 1
+    return math.floor(n*mult)
 end
 
-local t5 = {}
-local v3 = 259
-local v4 = 44
-local v5 = 30
-
-for i, v in ipairs(list) do
-    local UITextSizeConstraint = Instance.new("UITextSizeConstraint")
-
-    UITextSizeConstraint.MinTextSize = 1
-    UITextSizeConstraint.Parent = t4[v]
-    t5[v] = UITextSizeConstraint
+-- a row with a typeable TextBox that stores/reads a number via get/set
+local function inputRow(text, get, set, hint)
+    local r=rowFrame(30)
+    mklabel(r,text, UDim2.new(0,10,0,0), UDim2.new(1,-150,1,0),13,TXT,false,nil,6)
+    local box=Instance.new("TextBox")
+    box.AnchorPoint=Vector2.new(1,0.5); box.Position=UDim2.new(1,-6,0.5,0)
+    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(40,44,60)
+    box.BorderSizePixel=0; box.Font=Enum.Font.GothamBold; box.TextSize=13
+    box.TextColor3=ACCENT; box.ClearTextOnFocus=false
+    box.PlaceholderText=hint or ""; box.PlaceholderColor3=Color3.fromRGB(120,126,140)
+    box.Text=tostring(get()); box.ZIndex=6; box.Parent=r
+    Instance.new("UICorner",box).CornerRadius=UDim.new(0,6)
+    local pad=Instance.new("UIPadding",box); pad.PaddingLeft=UDim.new(0,8); pad.PaddingRight=UDim.new(0,8)
+    box.FocusLost:Connect(function()
+        local n=parseMoney(box.Text)
+        if n then set(n) end
+        box.Text="$"..fmtMoney(get())      -- normalize display (e.g. "$1M")
+    end)
+    box.Focused:Connect(function()
+        box.Text=tostring(math.floor(get())) -- show raw number for easy editing
+    end)
+    box.Text="$"..fmtMoney(get())
+    table.insert(guiRefreshers, function() box.Text="$"..fmtMoney(get()) end)
+    return r
 end
 
-local function refreshTabTextSize() --[[ refreshTabTextSize | Line: 184 | Upvalues: v3 (ref), v4 (ref), list (copy), t4 (copy), v5 (ref), TextService (copy), t5 (copy) ]]
-    local v1 = (1 / 0)
-    local v2 = v3 * 0.9
-    local v32 = v4
+----------------------------------------------------------------
+-- OPTIONS UI
+----------------------------------------------------------------
+-- CREW
+sectionHeader("AUTO CREW ROLL")
+toggleRow("Enabled", function() return OPT.crewEnabled end, function(v) OPT.crewEnabled=v end)
+do
+    local list=rarityList()
+    local function idx() for i,v in ipairs(list) do if v==string.upper(OPT.crewTargetName) then return i end end return #list end
+    cycleRow("Keep rarity (>=)", function() return string.upper(OPT.crewTargetName) end,
+        function() local i=idx()-1; if i<1 then i=#list end; OPT.crewTargetName=list[i] end,
+        function() local i=idx()+1; if i>#list then i=1 end; OPT.crewTargetName=list[i] end)
+end
+do
+    local tiers=hireTierIds()
+    local function idx() for i,v in ipairs(tiers) do if v==OPT.crewTier then return i end end return 1 end
+    cycleRow("Hire tier", function() return OPT.crewTier end,
+        function() local i=idx()-1; if i<1 then i=#tiers end; OPT.crewTier=tiers[i] end,
+        function() local i=idx()+1; if i>#tiers then i=1 end; OPT.crewTier=tiers[i] end)
+end
+toggleRow("Roll all slots at once", function() return OPT.crewScopeAll end, function(v) OPT.crewScopeAll=v end)
 
-    if v2 <= 0 then
+-- JOBS
+sectionHeader("AUTO JOBS")
+toggleRow("Enabled", function() return OPT.jobsEnabled end, function(v) OPT.jobsEnabled=v end)
+cycleRow("Target", function() return OPT.jobsStrategy=="highest" and "Highest energy" or "Lowest energy" end,
+    function() OPT.jobsStrategy=OPT.jobsStrategy=="highest" and "lowest" or "highest" end,
+    function() OPT.jobsStrategy=OPT.jobsStrategy=="highest" and "lowest" or "highest" end)
+cycleRow("Energy reserve", function() return OPT.jobsReserve end,
+    function() OPT.jobsReserve=math.max(0,OPT.jobsReserve-5) end,
+    function() OPT.jobsReserve=OPT.jobsReserve+5 end,"-","+")
+
+-- BANK
+sectionHeader("AUTO BANK")
+toggleRow("Enabled", function() return OPT.bankEnabled end, function(v) OPT.bankEnabled=v end)
+inputRow("Deposit when cash >=", function() return OPT.bankThreshold end,
+    function(v) OPT.bankThreshold=v end, "e.g. 1m")
+inputRow("Keep on hand", function() return OPT.bankKeep end,
+    function(v) OPT.bankKeep=v end, "0 = all")
+
+-- CONTRACTS
+sectionHeader("AUTO CONTRACTS")
+toggleRow("Claim when ready", function() return OPT.contractsEnabled end, function(v) OPT.contractsEnabled=v end)
+
+-- PLAYTIME
+sectionHeader("AUTO PLAYTIME REWARDS")
+toggleRow("Claim ladder when ready", function() return OPT.playtimeEnabled end, function(v) OPT.playtimeEnabled=v end)
+
+-- OPS
+sectionHeader("AUTO OPERATIONS")
+toggleRow("Start + collect ops", function() return OPT.opsEnabled end, function(v) OPT.opsEnabled=v end)
+do
+    local modes={"cash/sec","xp/sec","cash","xp","fastest","crate"}
+    local function idx() for i,v in ipairs(modes) do if v==OPT.opsStrategy then return i end end return 1 end
+    cycleRow("Pick best by", function() return OPT.opsStrategy end,
+        function() local i=idx()-1; if i<1 then i=#modes end; OPT.opsStrategy=modes[i] end,
+        function() local i=idx()+1; if i>#modes then i=1 end; OPT.opsStrategy=modes[i] end)
+end
+inputRow("Max op cost", function() return OPT.opsMaxCost end,
+    function(v) OPT.opsMaxCost=v end, "e.g. 500m")
+
+-- TERRITORY
+sectionHeader("AUTO TERRITORY (fast)")
+toggleRow("Enabled", function() return OPT.terrEnabled end, function(v) OPT.terrEnabled=v end)
+toggleRow("Claim unclaimed", function() return OPT.terrClaim end, function(v) OPT.terrClaim=v end)
+toggleRow("Attack rivals", function() return OPT.terrAttack end, function(v) OPT.terrAttack=v end)
+do
+    local modes={"weakest","highest tier","cheapest claim"}
+    local function idx() for i,v in ipairs(modes) do if v==OPT.terrTarget then return i end end return 1 end
+    cycleRow("Target priority", function() return OPT.terrTarget end,
+        function() local i=idx()-1; if i<1 then i=#modes end; OPT.terrTarget=modes[i] end,
+        function() local i=idx()+1; if i>#modes then i=1 end; OPT.terrTarget=modes[i] end)
+end
+cycleRow("Poll speed (s)", function() return string.format("%.2f",OPT.terrPoll) end,
+    function() OPT.terrPoll=math.max(0.2,OPT.terrPoll-0.1) end,
+    function() OPT.terrPoll=math.min(3,OPT.terrPoll+0.1) end,"-","+")
+cycleRow("Action gap (s)", function() return string.format("%.2f",OPT.terrActionGap) end,
+    function() OPT.terrActionGap=math.max(0.05,OPT.terrActionGap-0.05) end,
+    function() OPT.terrActionGap=math.min(2,OPT.terrActionGap+0.05) end,"-","+")
+cycleRow("Max attack stamina", function() return OPT.terrMaxAttackCost end,
+    function() OPT.terrMaxAttackCost=math.max(1,OPT.terrMaxAttackCost-1) end,
+    function() OPT.terrMaxAttackCost=OPT.terrMaxAttackCost+1 end,"-","+")
+cycleRow("Min stamina reserve", function() return OPT.terrMinStamina end,
+    function() OPT.terrMinStamina=math.max(0,OPT.terrMinStamina-1) end,
+    function() OPT.terrMinStamina=OPT.terrMinStamina+1 end,"-","+")
+cycleRow("Attack if defenders <", function() return OPT.terrMaxDefenders end,
+    function() OPT.terrMaxDefenders=math.max(1,OPT.terrMaxDefenders-1) end,
+    function() OPT.terrMaxDefenders=OPT.terrMaxDefenders+1 end,"-","+")
+
+-- ATTACK WHITELIST (only attack districts you tick)
+toggleRow("Use attack whitelist", function() return OPT.terrUseWhitelist end, function(v) OPT.terrUseWhitelist=v end)
+mklabel(rowFrame(20),"Tap districts you allow attacking:",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+local wlFrame=Instance.new("Frame")
+wlFrame.BackgroundTransparency=1; wlFrame.BorderSizePixel=0
+wlFrame.Size=UDim2.new(1,0,0,0); wlFrame.AutomaticSize=Enum.AutomaticSize.Y
+wlFrame.LayoutOrder=nextOrder(); wlFrame.ZIndex=5; wlFrame.Parent=scroll
+local wlLayout=Instance.new("UIListLayout",wlFrame)
+wlLayout.Padding=UDim.new(0,4); wlLayout.SortOrder=Enum.SortOrder.LayoutOrder
+local wlRows={}   -- district name -> {frame,paint}
+local function refreshDistrictList()
+    local TA=getRemote("TerritoryAction")
+    if not TA then return end
+    local ok,res=pcall(function() return TA:InvokeServer("map") end)
+    if not (ok and type(res)=="table" and type(res.districts)=="table") then return end
+    -- gather unique attackable (not-mine) districts by name
+    local seen={}
+    local order=0
+    for _,d in ipairs(res.districts) do
+        local nm=d.name
+        if nm and not seen[nm] then
+            seen[nm]=true; order=order+1
+            local row=wlRows[nm]
+            if not row then
+                local rf=Instance.new("Frame"); rf.BackgroundColor3=Color3.fromRGB(255,255,255)
+                rf.BackgroundTransparency=0.95; rf.BorderSizePixel=0; rf.Size=UDim2.new(1,0,0,26)
+                rf.LayoutOrder=order; rf.ZIndex=5; rf.Parent=wlFrame
+                Instance.new("UICorner",rf).CornerRadius=UDim.new(0,6)
+                local chk=Instance.new("TextButton"); chk.AnchorPoint=Vector2.new(0,0.5)
+                chk.Position=UDim2.new(0,6,0.5,0); chk.Size=UDim2.fromOffset(20,20)
+                chk.Font=Enum.Font.GothamBold; chk.TextSize=13; chk.TextColor3=Color3.fromRGB(255,255,255)
+                chk.ZIndex=6; chk.Parent=rf; Instance.new("UICorner",chk).CornerRadius=UDim.new(0,5)
+                local lbl=mklabel(rf,"",UDim2.new(0,32,0,0),UDim2.new(1,-38,1,0),11,TXT,false,nil,6)
+                local nmKey=nm
+                local function paint() local on=OPT.terrWhitelist[nmKey]
+                    chk.Text=on and "X" or ""; chk.BackgroundColor3=on and ONCOL or OFFCOL end
+                chk.Activated:Connect(function() OPT.terrWhitelist[nmKey]=(not OPT.terrWhitelist[nmKey]) or nil; paint() end)
+                row={frame=rf,lbl=lbl,paint=paint}; wlRows[nm]=row; paint()
+                table.insert(guiRefreshers, paint)
+            end
+            local who = d.mine and "(yours)" or (d.holderName and ("held by "..d.holderName) or "unclaimed")
+            local city = d.city and (" - "..d.city) or ""
+            row.lbl.Text=("%s%s  T%s  %s"):format(nm, city, tostring(d.tier or "?"), who)
+            row.frame.Visible=true
+            row.paint()
+        end
+    end
+end
+do
+    local rr=rowFrame(24)
+    local rb=smallBtn(rr,"Refresh districts",150); rb.AnchorPoint=Vector2.new(0.5,0.5)
+    rb.Position=UDim2.new(0.5,0,0.5,0); rb.Activated:Connect(refreshDistrictList)
+end
+
+-- CREW GARRISON (auto-assign captured districts)
+toggleRow("Auto-station crew", function() return OPT.terrGarrison end, function(v) OPT.terrGarrison=v end)
+toggleRow("Fill to garrison cap", function() return OPT.terrGarrisonFill end, function(v) OPT.terrGarrisonFill=v end)
+cycleRow("Members / district", function() return OPT.terrGarrisonNum end,
+    function() OPT.terrGarrisonNum=math.max(1,OPT.terrGarrisonNum-1) end,
+    function() OPT.terrGarrisonNum=OPT.terrGarrisonNum+1 end,"-","+")
+
+-- Live crew list with checkboxes (which members are eligible to be stationed)
+mklabel(rowFrame(20),"Tap a member to mark them for stationing:",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+local crewListFrame=Instance.new("Frame")
+crewListFrame.BackgroundTransparency=1; crewListFrame.BorderSizePixel=0
+crewListFrame.Size=UDim2.new(1,0,0,0); crewListFrame.AutomaticSize=Enum.AutomaticSize.Y
+crewListFrame.LayoutOrder=nextOrder(); crewListFrame.ZIndex=5; crewListFrame.Parent=scroll
+local clLayout=Instance.new("UIListLayout",crewListFrame)
+clLayout.Padding=UDim.new(0,4); clLayout.SortOrder=Enum.SortOrder.LayoutOrder
+local crewListRows={}      -- slot index -> {frame, check, lbl}
+local RARNAMES=rarityList()
+local function refreshCrewList()
+    local data=getData()
+    local crew=(data and data.crew) or {}
+    -- build/update a row per crew slot (skip slot 1 = you, always protected)
+    for i=2,#crew do
+        local m=crew[i] or {}
+        local row=crewListRows[i]
+        if not row then
+            local rf=Instance.new("Frame"); rf.BackgroundColor3=Color3.fromRGB(255,255,255)
+            rf.BackgroundTransparency=0.95; rf.BorderSizePixel=0; rf.Size=UDim2.new(1,0,0,26)
+            rf.LayoutOrder=i; rf.ZIndex=5; rf.Parent=crewListFrame
+            Instance.new("UICorner",rf).CornerRadius=UDim.new(0,6)
+            local chk=Instance.new("TextButton"); chk.AnchorPoint=Vector2.new(0,0.5)
+            chk.Position=UDim2.new(0,6,0.5,0); chk.Size=UDim2.fromOffset(20,20)
+            chk.Font=Enum.Font.GothamBold; chk.TextSize=13; chk.TextColor3=Color3.fromRGB(255,255,255)
+            chk.ZIndex=6; chk.Parent=rf; Instance.new("UICorner",chk).CornerRadius=UDim.new(0,5)
+            local lbl=mklabel(rf,"",UDim2.new(0,32,0,0),UDim2.new(1,-38,1,0),11,TXT,false,nil,6)
+            local function paintChk() local on=OPT.terrPicked[i]
+                chk.Text=on and "X" or ""; chk.BackgroundColor3=on and ONCOL or OFFCOL end
+            chk.Activated:Connect(function() OPT.terrPicked[i]=not OPT.terrPicked[i]; paintChk() end)
+            row={frame=rf,check=chk,lbl=lbl,paint=paintChk}; crewListRows[i]=row; paintChk()
+        end
+        local rar = m.rarity and (RARNAMES[m.rarity] or ("R"..tostring(m.rarity))) or "empty"
+        local nm  = m.name or ("Slot "..i)
+        local busy=(m.duty~=nil) and " [busy]" or (((m.injuredUntil or 0)>os.time()) and " [injured]" or "")
+        row.lbl.Text=("%d. %s  (%s)  A%s/D%s%s"):format(i,nm,rar,tostring(m.atk or "?"),tostring(m.def or "?"),busy)
+        row.frame.Visible=true
+        row.paint()
+    end
+    -- hide rows beyond current crew size
+    for i=#crew+1,#crewListRows do if crewListRows[i] then crewListRows[i].frame.Visible=false end end
+end
+do
+    local rr=rowFrame(24)
+    local rb=smallBtn(rr,"Refresh crew list",150); rb.AnchorPoint=Vector2.new(0.5,0.5)
+    rb.Position=UDim2.new(0.5,0,0.5,0); rb.Activated:Connect(refreshCrewList)
+end
+
+-- FAMILY PERKS
+sectionHeader("AUTO FAMILY PERKS")
+toggleRow("Enabled", function() return OPT.famEnabled end, function(v) OPT.famEnabled=v end)
+toggleRow("Feed my stamina to perks", function() return OPT.famStamina end, function(v) OPT.famStamina=v end)
+do
+    local modes={"auto","enforcers","guardians","hustlers","medics","runners",
+                 "bagmen","insurance","veterans","demolition","bosshunters"}
+    local function idx() for i,v in ipairs(modes) do if v==OPT.famStaminaTarget then return i end end return 1 end
+    cycleRow("Stamina perk", function() return OPT.famStaminaTarget end,
+        function() local i=idx()-1; if i<1 then i=#modes end; OPT.famStaminaTarget=modes[i] end,
+        function() local i=idx()+1; if i>#modes then i=1 end; OPT.famStaminaTarget=modes[i] end)
+end
+cycleRow("Keep stamina", function() return OPT.famStaminaKeep end,
+    function() OPT.famStaminaKeep=math.max(0,OPT.famStaminaKeep-1) end,
+    function() OPT.famStaminaKeep=OPT.famStaminaKeep+1 end,"-","+")
+toggleRow("Buy cash perks (vault)", function() return OPT.famCashPerks end, function(v) OPT.famCashPerks=v end)
+toggleRow("Buy gold perks (vault)", function() return OPT.famGoldPerks end, function(v) OPT.famGoldPerks=v end)
+mklabel(rowFrame(28),"Vault perks need Advisor rank or higher.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+
+-- GENERAL
+sectionHeader("GENERAL")
+cycleRow("Call gap (s)", function() return string.format("%.2f",OPT.callGap) end,
+    function() OPT.callGap=math.max(0.05,OPT.callGap-0.05) end,
+    function() OPT.callGap=math.min(5,OPT.callGap+0.05) end,"-","+")
+cycleRow("Loop delay (s)", function() return string.format("%.2f",OPT.loopDelay) end,
+    function() OPT.loopDelay=math.max(0.1,OPT.loopDelay-0.1) end,
+    function() OPT.loopDelay=math.min(10,OPT.loopDelay+0.1) end,"-","+")
+
+-- CONFIG (save/load all settings to the executor filesystem)
+sectionHeader("CONFIG")
+local cfgStatus
+do
+    -- config name text box
+    local r=rowFrame(30)
+    mklabel(r,"Config name", UDim2.new(0,10,0,0), UDim2.new(1,-150,1,0),13,TXT,false,nil,6)
+    local box=Instance.new("TextBox")
+    box.AnchorPoint=Vector2.new(1,0.5); box.Position=UDim2.new(1,-6,0.5,0)
+    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(40,44,60)
+    box.BorderSizePixel=0; box.Font=Enum.Font.GothamBold; box.TextSize=13
+    box.TextColor3=ACCENT; box.ClearTextOnFocus=false; box.Text=CONFIG_NAME
+    box.PlaceholderText="default"; box.PlaceholderColor3=Color3.fromRGB(120,126,140)
+    box.ZIndex=6; box.Parent=r
+    Instance.new("UICorner",box).CornerRadius=UDim.new(0,6)
+    local pad=Instance.new("UIPadding",box); pad.PaddingLeft=UDim.new(0,8); pad.PaddingRight=UDim.new(0,8)
+    box.FocusLost:Connect(function()
+        local t=box.Text:gsub("[^%w_%- ]",""):gsub("%s+","_")
+        if t=="" then t="default" end
+        CONFIG_NAME=t; box.Text=t
+    end)
+
+    -- Save / Load buttons
+    local rr=rowFrame(30)
+    local save=Instance.new("TextButton"); save.Size=UDim2.new(0.5,-8,1,-6)
+    save.Position=UDim2.new(0,6,0,3); save.Font=Enum.Font.GothamBold; save.TextSize=14
+    save.Text="SAVE"; save.TextColor3=Color3.fromRGB(255,255,255); save.BackgroundColor3=ONCOL
+    save.ZIndex=6; save.Parent=rr; Instance.new("UICorner",save).CornerRadius=UDim.new(0,6)
+    local load=Instance.new("TextButton"); load.Size=UDim2.new(0.5,-8,1,-6)
+    load.Position=UDim2.new(0.5,2,0,3); load.Font=Enum.Font.GothamBold; load.TextSize=14
+    load.Text="LOAD"; load.TextColor3=Color3.fromRGB(255,255,255); load.BackgroundColor3=Color3.fromRGB(90,120,190)
+    load.ZIndex=6; load.Parent=rr; Instance.new("UICorner",load).CornerRadius=UDim.new(0,6)
+
+    cfgStatus=mklabel(rowFrame(18),"",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,Enum.TextXAlignment.Center,6)
+
+    save.Activated:Connect(function()
+        local ok=SaveConfiguration()
+        cfgStatus.Text = ok and ("saved '"..(CONFIG_NAME or "default").."'") or "save failed (executor lacks writefile)"
+    end)
+    load.Activated:Connect(function()
+        local ok=LoadConfiguration()
+        cfgStatus.Text = ok and ("loaded '"..(CONFIG_NAME or "default").."'") or "no saved config / load failed"
+        if OPT.terrGarrison ~= nil then pcall(refreshCrewList) end
+    end)
+end
+toggleRow("Auto-save on Start/Stop", function() return OPT.autoSaveConfig end, function(v) OPT.autoSaveConfig=v end)
+
+local limitLbl=mklabel(scroll,"Rate limit: OK",UDim2.new(0,0,0,0),UDim2.new(1,0,0,18),12,Color3.fromRGB(150,220,170))
+limitLbl.LayoutOrder=nextOrder(); limitLbl.TextXAlignment=Enum.TextXAlignment.Center
+
+local btn=Instance.new("TextButton"); btn.Size=UDim2.new(1,-32,0,46)
+btn.Position=UDim2.new(0,16,1,-60); btn.Font=Enum.Font.GothamBold; btn.TextSize=18
+btn.Text="START"; btn.TextColor3=Color3.fromRGB(255,255,255); btn.BackgroundColor3=ONCOL
+btn.ZIndex=7; btn.Parent=win
+Instance.new("UICorner",btn).CornerRadius=UDim.new(0,12)
+
+-- dragging (header strip only)
+do
+    local dragging,dragStart,startPos
+    win.InputBegan:Connect(function(i)
+        if (i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch) then
+            local rel=i.Position.Y-win.AbsolutePosition.Y
+            if rel<120 then
+                dragging=true; dragStart=i.Position; startPos=win.Position
+                i.Changed:Connect(function() if i.UserInputState==Enum.UserInputState.End then dragging=false end end)
+            end
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+            local d=i.Position-dragStart
+            win.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+        end
+    end)
+end
+
+local function updatePanel(statusText)
+    if statusText then statusLbl.Text="Status: "..statusText end
+    cnt1.Text=("Crew  kept %d  rolling %d  remaining %d"):format(stats.kept,stats.rolling,stats.remaining)
+    cnt2.Text=("Dismiss %d  hire %d  jobs %d"):format(stats.dismissed,stats.hired,stats.jobs)
+    cnt3.Text=("Bank %d  contract %d  play %d  ops %d/%d"):format(
+        stats.banked,stats.contracts,stats.playtime,stats.opsStarted,stats.opsCollected)
+    if cnt4 then cnt4.Text=("Territory %d/%d  family perks %d"):format(stats.terrClaims,stats.terrAttacks,stats.famPerks) end
+    if stats.limited then limitLbl.Text="Rate limit: backing off..."; limitLbl.TextColor3=Color3.fromRGB(240,170,90)
+    else limitLbl.Text="Rate limit: OK"; limitLbl.TextColor3=Color3.fromRGB(150,220,170) end
+end
+
+----------------------------------------------------------------
+-- REMOTE ACTIONS + throttle
+----------------------------------------------------------------
+local function invoke(remote,...)
+    if not remote then return true end
+    local args={...}
+    local ok,res=pcall(function() return remote:InvokeServer(table.unpack(args)) end)
+    if not ok then return false end
+    if type(res)=="table" then
+        if res.ok then return true,res end
+        local msg=tostring(res.msg or ""):lower()
+        if msg:find("rate") or msg:find("slow") or msg:find("wait")
+        or msg:find("too fast") or msg:find("limit") then return false,"limited" end
+        return true,res
+    end
+    return true
+end
+local backoff=BACKOFF_START
+local function throttled(remote,...)
+    local ok,why=invoke(remote,...)
+    if ok==false and why=="limited" then
+        stats.limited=true
+        updatePanel("rate limited - waiting "..string.format("%.1f",backoff).."s")
+        task.wait(backoff)
+        backoff=math.min(backoff*BACKOFF_GROWTH,BACKOFF_MAX)
+        return false
+    end
+    stats.limited=false; backoff=BACKOFF_START
+    task.wait(OPT.callGap)
+    return true,why
+end
+
+----------------------------------------------------------------
+-- CREW
+----------------------------------------------------------------
+local function buildKeepSet()
+    local keep={}; local minIdx=nameToIndex(OPT.crewTargetName) or 6
+    local names=rarityList()
+    for i=minIdx,#names do keep[i]=true end
+    return keep,minIdx
+end
+local function crewPassNative(data)
+    local crew=data.crew or {}; local keep,targetIdx=buildKeepSet()
+    stats.kept,stats.rolling,stats.remaining=0,0,0
+    local now=os.time(); local CA=getRemote("CrewAction")
+    for i=1,#crew do
+        if _G.CrewAutoRoll_Stop then break end
+        if not (OPT.protectLeader and i==1) then
+            local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
+            if m.rolling then stats.rolling=stats.rolling+1
+            elseif m.rarity~=nil and keep[m.rarity] then stats.kept=stats.kept+1
+            elseif busy then
+            else
+                stats.remaining=stats.remaining+1
+                throttled(CA,"autoroll",i,OPT.crewTier,targetIdx)
+                updatePanel(("auto-rolling slot %d -> %s+"):format(i,indexToName(targetIdx)))
+                if not OPT.crewScopeAll then break end
+            end
+        end
+    end
+    return stats.rolling==0 and stats.remaining==0 and stats.kept>0
+end
+local function crewPassManual(data)
+    local crew=data.crew or {}; local keep=buildKeepSet()
+    stats.kept,stats.rolling,stats.remaining=0,0,0
+    local now=os.time(); local CA=getRemote("CrewAction")
+    for i=1,#crew do
+        if _G.CrewAutoRoll_Stop then break end
+        if not (OPT.protectLeader and i==1) then
+            local m=crew[i] or {}; local busy=(m.duty~=nil) or ((m.injuredUntil or 0)>now)
+            if m.rolling then stats.rolling=stats.rolling+1
+            elseif m.rarity~=nil and keep[m.rarity] then stats.kept=stats.kept+1
+            elseif busy then
+            elseif m.rarity~=nil then
+                stats.remaining=stats.remaining+1
+                if throttled(CA,"dismiss",i) then stats.dismissed=stats.dismissed+1 end
+                updatePanel("dismissing slot "..i)
+            else
+                stats.remaining=stats.remaining+1
+                if throttled(CA,"hire",OPT.crewTier) then stats.hired=stats.hired+1 end
+                updatePanel("hiring slot "..i)
+            end
+        end
+    end
+    return stats.remaining==0 and stats.rolling==0
+end
+
+----------------------------------------------------------------
+-- JOBS
+----------------------------------------------------------------
+local function jobEnergyCost(job,data)
+    local jd=(data.jobs or {})[job.id]; local mt=jd and jd.masteryTier or 0
+    return math.max(1,math.floor(job.energy*(1-(mt>=2 and 0.05 or 0))+0.5))
+end
+local function jobsPassLive(data)
+    local gd=getGameData(); if not gd then return end
+    local ok,JOBS=pcall(function() return gd.JOBS end)
+    if not ok or type(JOBS)~="table" then return end
+    local DoJob=getRemote("DoJob")
+    local energy=(data.pools and data.pools.energy) or 0
+    local level=data.level or 1; local guard=0
+
+    -- In "highest" mode we commit to the single most expensive UNLOCKED job
+    -- and wait until we can afford it, rather than spending on cheaper jobs.
+    -- Recompute the target each iteration (mastery can change costs).
+    local function pickTarget()
+        local best,bestCost
+        for _,job in ipairs(JOBS) do
+            if level>=job.level then
+                local cost=jobEnergyCost(job,data)
+                if not best then best,bestCost=job,cost
+                elseif OPT.jobsStrategy=="highest" and cost>bestCost then best,bestCost=job,cost
+                elseif OPT.jobsStrategy=="lowest"  and cost<bestCost then best,bestCost=job,cost end
+            end
+        end
+        return best,bestCost
+    end
+
+    while not _G.CrewAutoRoll_Stop and guard<200 do
+        guard=guard+1
+        local target,cost=pickTarget()
+        if not target then break end                          -- no unlocked jobs
+
+        if cost > (energy-OPT.jobsReserve) then
+            -- Can't afford the TARGET job right now.
+            -- highest mode: SAVE UP (wait), don't waste energy on cheaper jobs.
+            -- lowest mode: target is already the cheapest, so nothing is affordable.
+            updatePanel(("saving energy for: %s (need %d, have %d)")
+                :format(target.name or target.id, cost, math.max(0,energy)))
+            break
+        end
+
+        updatePanel(("doing job: %s (%d energy)"):format(target.name or target.id,cost))
+        local ok2,why=throttled(DoJob,target.id)
+        if ok2==false then break end                          -- rate limited
+        if type(why)=="table" and why.ok then stats.jobs=stats.jobs+1
+        else local d2=getData(); energy=(d2 and d2.pools and d2.pools.energy) or (energy-cost); break end
+        energy=energy-cost
+    end
+end
+
+----------------------------------------------------------------
+-- BANK  (fee is server-side; this only limits stealable exposure)
+----------------------------------------------------------------
+local function bankPass(data)
+    local cash=data.cash or 0
+    if cash<OPT.bankThreshold then return end
+    if cash<=OPT.bankKeep then return end
+    local amount = OPT.bankKeep>0 and (cash-OPT.bankKeep) or 1000000000000000
+    local Deposit=getRemote("Deposit")
+    local ok=throttled(Deposit,amount)
+    if ok~=false then stats.banked=stats.banked+1; updatePanel("banked cash") end
+end
+
+----------------------------------------------------------------
+-- CONTRACTS  (claim done-but-unclaimed tasks + bonuses)
+----------------------------------------------------------------
+local function contractsPass(data)
+    local c=data.contracts; if type(c)~="table" then return end
+    local CA=getRemote("ContractAction")
+    local dailyCount=configCount("DAILY_TIERS",3)
+    local weeklyCount=configCount("WEEKLY_TIERS",1)
+
+    local daily=type(c.daily)=="table" and c.daily or {}
+    local claimedDaily=0
+    for i=1,math.max(#daily,dailyCount) do
+        if _G.CrewAutoRoll_Stop then break end
+        local t=daily[i]
+        if t then
+            if t.done and not t.claimed then
+                if throttled(CA,"claim",i) then stats.contracts=stats.contracts+1; updatePanel("claimed daily "..i) end
+            end
+            if t.claimed then claimedDaily=claimedDaily+1 end
+        end
+    end
+
+    local weekly=type(c.weekly)=="table" and c.weekly or {}
+    if weekly.id~=nil then weekly={weekly} end
+    local claimedWeekly=0
+    for j=1,math.max(#weekly,weeklyCount) do
+        if _G.CrewAutoRoll_Stop then break end
+        local w=weekly[j]
+        if w then
+            if w.done and not w.claimed then
+                if throttled(CA,"claimweekly",j) then stats.contracts=stats.contracts+1; updatePanel("claimed weekly "..j) end
+            end
+            if w.claimed then claimedWeekly=claimedWeekly+1 end
+        end
+    end
+
+    -- daily bonus: all daily claimed
+    if not _G.CrewAutoRoll_Stop and dailyCount>0 and claimedDaily>=dailyCount and not c.bonusClaimed then
+        if throttled(CA,"claimbonus") then stats.contracts=stats.contracts+1; updatePanel("claimed daily bonus") end
+    end
+    -- weekly bonus: all weekly claimed
+    if not _G.CrewAutoRoll_Stop and weeklyCount>0 and claimedWeekly>=weeklyCount and not c.weeklyBonusClaimed then
+        if throttled(CA,"claimweeklybonus") then stats.contracts=stats.contracts+1; updatePanel("claimed weekly bonus") end
+    end
+end
+
+-- Contracts UI fallback (fire any visible Claim buttons)
+local function contractsPassUI()
+    local s=getPanelScroller("ContractsPanel",{"Sub_tasks","Scroller"})
+    if not s then return end
+    for _,row in ipairs(s:GetChildren()) do
+        local cb=row:FindFirstChild("ClaimButton")
+        if cb and cb.Visible then fireButton(cb); stats.contracts=stats.contracts+1; task.wait(OPT.callGap) end
+    end
+end
+
+----------------------------------------------------------------
+-- PLAYTIME LADDER
+----------------------------------------------------------------
+local function playtimePass(data)
+    local cfg=getConfig(); if not cfg then return end
+    local ok,LADDER=pcall(function() return cfg.LADDER end)
+    if not ok or type(LADDER)~="table" then return end
+    local pt=data.playtime or {}
+    local now=(pt.todaySeconds or 0)+sinceSync()
+    local claimed=pt.laddersClaimed or {}
+    local Claim=getRemote("ClaimLadder")
+    for i=1,#LADDER do
+        if _G.CrewAutoRoll_Stop then break end
+        if not claimed[tostring(i)] and (LADDER[i].seconds or math.huge)<=now then
+            if throttled(Claim,i) then stats.playtime=stats.playtime+1; updatePanel("claimed playtime "..i) end
+        end
+    end
+end
+
+-- Playtime UI fallback (buttons whose text == CLAIM)
+local function playtimePassUI()
+    local s=getPanelScroller("SafehousePanel",{"Scroller","LadderRow"})
+    if not s then return end
+    for _,rung in ipairs(s:GetChildren()) do
+        local cb=rung:FindFirstChild("ClaimButton")
+        if cb and cb:IsA("TextButton") and cb.Text=="CLAIM" then
+            fireButton(cb); stats.playtime=stats.playtime+1; task.wait(OPT.callGap)
+        end
+    end
+end
+
+----------------------------------------------------------------
+-- OPS  (collect READY ops, then start the best affordable ones)
+----------------------------------------------------------------
+local function opSlotCount(data)
+    local cfg=getConfig()
+    local count=1
+    if cfg then
+        local ok,S=pcall(function() return cfg.OPERATION_SLOTS end)
+        if ok and type(S)=="table" then
+            if (data.level or 1) >= (S.level15 or math.huge) then count=count+1 end
+            if (data.level or 1) >= (S.level30 or math.huge) then count=count+1 end
+        end
+    end
+    if (data.derived or {}).fourthSlot then count=count+1 end
+    return count
+end
+
+-- score an operation for "best" selection
+-- read a numeric field trying several possible key names (op data field
+-- names aren't guaranteed, so we look at all the likely ones)
+local function numField(op, ...)
+    for _,k in ipairs({...}) do
+        local v=op[k]
+        if type(v)=="number" then return v end
+    end
+    return nil
+end
+local function opCash(op)  return numField(op,"cash","reward","payout","money","income","pay","profit") or 0 end
+local function opXp(op)    return numField(op,"xp","exp","experience") or 0 end
+local function opDur(op)   return math.max(1, numField(op,"duration","time","seconds","dur","length") or 1) end
+local function opCost(op)  return numField(op,"cost","price","energy","stake") or 0 end
+local function opCrate(op) return numField(op,"crateChance","crate","cratePct","dropChance") or 0 end
+
+local function opScore(op)
+    local dur=opDur(op)
+    local cash=opCash(op)
+    local xp=opXp(op)
+    local crate=opCrate(op)
+    local s=OPT.opsStrategy
+    if s=="cash"    then return cash end
+    if s=="xp"      then return xp end
+    if s=="xp/sec"  then return xp/dur end
+    if s=="fastest" then return -dur end          -- shortest duration wins
+    if s=="crate"   then return crate*1e9 + cash/dur end -- prefer crate, tiebreak by cash/sec
+    return cash/dur                                 -- default cash/sec
+end
+
+local function opsPass(data)
+    local gd=getGameData(); if not gd then return end
+    local ok,OPS=pcall(function() return gd.OPERATIONS end)
+    if not ok or type(OPS)~="table" then return end
+
+    local active=(data.operations or {}).active or {}
+    local slots=opSlotCount(data)
+    local Collect=getRemote("CollectOperation")
+    local Start=getRemote("StartOperation")
+
+    -- 1) collect any READY ops (remaining <= 0)
+    for i=1,slots do
+        if _G.CrewAutoRoll_Stop then break end
+        local a=active[i]
+        if a and (a.remaining or 0)<=0 and a.opId then
+            if throttled(Collect,i) then stats.opsCollected=stats.opsCollected+1; updatePanel("collected op slot "..i) end
+        end
+    end
+
+    -- refresh after collecting (freed slots / new cash)
+    data=getData() or data
+    active=(data.operations or {}).active or {}
+    local used=0
+    for i=1,slots do if active[i] and active[i].opId then used=used+1 end end
+    local free=slots-used
+    if free<=0 then return end
+
+    -- 2) rank UNLOCKED ops within max-cost, best first (ignoring current cash)
+    local cash=data.cash or 0
+    local level=data.level or 1
+    local respect=data.respect or 0
+    local candidates={}
+    for _,op in ipairs(OPS) do
+        local locked=false
+        if op.level and level<op.level then locked=true end
+        if op.respect and respect<op.respect then locked=true end
+        if not locked and opCost(op)<=OPT.opsMaxCost then
+            table.insert(candidates,op)
+        end
+    end
+    if #candidates==0 then return end
+    table.sort(candidates,function(a,b) return opScore(a)>opScore(b) end)
+
+    -- 3) SAVE-UP: the top-ranked op is the target. If we can't afford it yet,
+    --    do NOT spend cash on cheaper ops - wait and let cash build up.
+    --    (This is what "pick best by cash" needs: save for the biggest payout.)
+    local target=candidates[1]
+    local tcost=opCost(target)
+    if tcost>cash then
+        updatePanel(("saving for op: %s pays %s (need %s, have %s)")
+            :format(target.name or target.id, fmtMoney(opCash(target)), fmtMoney(tcost), fmtMoney(cash)))
         return
     end
 
-    for i, v in ipairs(list) do
-        local v42 = t4[v]
-        local v6 = v2 - v2 * 0.24 - math.max(v5, v2 * 0.24)
-        local X = TextService:GetTextSize(v42.Text, 100, v42.Font, Vector2.new(10000, 200)).X
-
-        v1 = math.min(v1, (math.min(v32 * 0.43999999999999995, v6 * 100 / math.max(X, 1))))
-    end
-
-    local v12 = math.max(1, (math.floor(v1)))
-
-    for i, v in ipairs(list) do
-        t5[v].MaxTextSize = v12
+    -- 4) Fill EVERY free slot with the best op we can currently afford.
+    --    candidates is sorted best-first, so each slot re-scans from the top;
+    --    this means the SAME best op is started repeatedly across slots as long
+    --    as it stays affordable, and only drops to a lesser op when the best one
+    --    can no longer be paid for.
+    while free>0 and not _G.CrewAutoRoll_Stop do
+        local pick=nil
+        for _,op in ipairs(candidates) do
+            if opCost(op)<=cash then pick=op; break end
+        end
+        if not pick then break end                 -- can't afford anything more
+        local ok2=throttled(Start,pick.id)
+        if ok2==false then break end               -- rate limited; try next pass
+        stats.opsStarted=stats.opsStarted+1
+        cash=cash-opCost(pick)
+        free=free-1
+        updatePanel("started op: "..(pick.name or pick.id).." (pays "..fmtMoney(opCash(pick))..")")
     end
 end
 
-t.attackPlayer = FightTab.attack
-t.watchAttackButton = FightTab.watchAttackButton
-t.attackCooldownLeft = FightTab.cooldownLeft
-t.confirmDialog = FightTab.confirm
-PlayerList.init(t)
-t.togglePlayerList = PlayerList.toggle
-
-local v6 = Color3.fromRGB(212, 175, 55)
-local v7 = Color3.fromRGB(38, 38, 40)
-local v8 = Color3.fromRGB(20, 18, 10)
-local v9 = Color3.fromRGB(232, 226, 208)
-local v10 = Color3.fromRGB(12, 12, 13)
-local v11 = Color3.fromRGB(96, 94, 90)
-local v12 = Color3.fromRGB(34, 34, 36)
-local v13 = Color3.fromRGB(56, 56, 59)
-local v14 = UDim.new(0.24, 0)
-local t6 = {}
-local t7 = {}
-local v15 = nil
-
-local function unlockLevelOf(p1) --[[ unlockLevelOf | Line: 244 | Upvalues: Config (copy) ]]
-    return Config.TAB_UNLOCKS[p1] or 1
+-- Ops UI fallback: collect any visible Collect buttons, start visible enabled Start buttons
+local function opsPassUI()
+    local panel=getPanelScroller("OpsPanel")
+    if not panel then return end
+    local slotRow=panel:FindFirstChild("SlotRow")
+    if slotRow then
+        for _,slot in ipairs(slotRow:GetChildren()) do
+            local cb=slot:FindFirstChild("CollectButton")
+            if cb and cb.Visible then fireButton(cb); stats.opsCollected=stats.opsCollected+1; task.wait(OPT.callGap) end
+        end
+    end
 end
 
-local function paintTabButton(p1) --[[ paintTabButton | Line: 248 | Upvalues: t4 (copy), t6 (copy), v10 (copy), v11 (copy), v15 (ref), v6 (copy), v7 (copy), v8 (copy), v9 (copy), v12 (copy), v13 (copy), v14 (copy), v5 (ref) ]]
-    local v1 = t4[p1]
-    local v2 = t6[p1] == true
+----------------------------------------------------------------
+-- FAMILY PERKS
+--   FamilyAction("info") -> { ok, family = { role, perks{}, level,
+--       maxPerkLevel, vault, vaultGold, perkCosts[], goldPerkCosts[],
+--       staminaPerkCosts[], perkProgress{}, members[] } }
+--   FamilyAction("buyperk", trackId)      -> spend VAULT CASH (Advisor+)
+--   FamilyAction("buygoldperk", trackId)  -> spend VAULT GOLD (Advisor+)
+--   FamilyAction("contribute", trackId, amount) -> spend YOUR stamina (any member)
+-- Track groups (from the game): cash = {jobCut,landlord,smugglers},
+--   gold = {hitters,wreckers,fences}, stamina = {enforcers,guardians,
+--   hustlers,medics,runners,bagmen,insurance,veterans,demolition,bosshunters}
+----------------------------------------------------------------
+local FAM_CASH    = { "jobCut", "landlord", "smugglers" }
+local FAM_GOLD    = { "hitters", "wreckers", "fences" }
+local FAM_STAMINA = { "enforcers","guardians","hustlers","medics","runners",
+                      "bagmen","insurance","veterans","demolition","bosshunters" }
 
-    if v2 then
-        v1.BackgroundColor3 = v10
-        v1.TextColor3 = v11
+local function famRankOK(role)
+    -- Advisor, Underboss, or Boss can buy vault perks
+    return role=="advisor" or role=="underboss" or role=="boss"
+end
+
+local function famFetchInfo()
+    local FA=getRemote("FamilyAction")
+    if not FA then return nil end
+    local ok,res=pcall(function() return FA:InvokeServer("info") end)
+    if ok and type(res)=="table" and res.ok and type(res.family)=="table" then
+        return res.family
+    end
+    return nil
+end
+
+-- pick the stamina track to feed: user's fixed choice, else the lowest-level one
+local function famPickStaminaTrack(fam)
+    local maxLvl = fam.maxPerkLevel or 20
+    if OPT.famStaminaTarget~="auto" then
+        local t=OPT.famStaminaTarget
+        local lvl=(fam.perks and fam.perks[t]) or 0
+        if lvl<maxLvl then return t end
+        return nil
+    end
+    local best, bestLvl=nil, math.huge
+    for _,t in ipairs(FAM_STAMINA) do
+        local lvl=(fam.perks and fam.perks[t]) or 0
+        if lvl<maxLvl and lvl<bestLvl then best,bestLvl=t,lvl end
+    end
+    return best
+end
+
+local function famPass()
+    local fam=famFetchInfo()
+    if not fam then updatePanel("family: no data (not in a family?)"); return end
+    local maxLvl=fam.maxPerkLevel or 20
+    local FA=getRemote("FamilyAction")
+
+    -- 1) Feed your stamina into a stamina perk (any member can do this)
+    if OPT.famStamina then
+        local data=getData()
+        local stamina=(data and data.pools and data.pools.stamina) or 0
+        local track=famPickStaminaTrack(fam)
+        if track and stamina > OPT.famStaminaKeep then
+            -- give 5 if we can afford to keep reserve, else 1
+            local give = (stamina - OPT.famStaminaKeep) >= 5 and 5 or 1
+            if throttled(FA,"contribute",track,give) then
+                stats.famPerks=stats.famPerks+1
+                updatePanel("gave "..give.." stamina -> "..track)
+            end
+        end
+    end
+
+    -- 2) Buy CASH perks from the vault (needs Advisor+)
+    if OPT.famCashPerks and famRankOK(fam.role) then
+        for _,t in ipairs(FAM_CASH) do
+            if _G.CrewAutoRoll_Stop then break end
+            local lvl=(fam.perks and fam.perks[t]) or 0
+            local cost=fam.perkCosts and fam.perkCosts[lvl+1]
+            local levelReq=lvl+1
+            if lvl<maxLvl and cost and (fam.level or 1)>=levelReq and cost<=(fam.vault or 0) then
+                if throttled(FA,"buyperk",t) then
+                    stats.famPerks=stats.famPerks+1
+                    updatePanel("bought cash perk: "..t.." (lvl "..(lvl+1)..")")
+                end
+            end
+        end
+    end
+
+    -- 3) Buy GOLD perks from the vault gold (needs Advisor+)
+    if OPT.famGoldPerks and famRankOK(fam.role) then
+        for _,t in ipairs(FAM_GOLD) do
+            if _G.CrewAutoRoll_Stop then break end
+            local lvl=(fam.perks and fam.perks[t]) or 0
+            local cost=fam.goldPerkCosts and fam.goldPerkCosts[lvl+1]
+            if lvl<maxLvl and cost and cost<=(fam.vaultGold or 0) then
+                if throttled(FA,"buygoldperk",t) then
+                    stats.famPerks=stats.famPerks+1
+                    updatePanel("bought gold perk: "..t.." (lvl "..(lvl+1)..")")
+                end
+            end
+        end
+    end
+end
+
+----------------------------------------------------------------
+-- TERRITORY  (its OWN fast loop - speed matters, rivals compete)
+--   TerritoryAction("map")     -> { ok, districts[], orders }
+--   TerritoryAction("claim",id)-> grab an UNCLAIMED district
+--   TerritoryAction("attack",id)-> siege a rival district
+--   A district: { id, name, holderId, mine, hp, hpMax, claimCost,
+--                 tier, underSiege, shieldUntil, serverNow }
+----------------------------------------------------------------
+local terrRunning = false
+local terrInflight = {}   -- id -> true while a claim/attack is pending (avoid double-fire)
+
+----------------------------------------------------------------
+-- Territory action QUEUE
+--   The server has no batch API (station/claim/attack each take one
+--   target per InvokeServer call), and firing them all at once instantly
+--   rate-limits us. So instead of many concurrent task.spawns, we push
+--   jobs onto ONE queue that a single worker drains with pacing + backoff.
+--   Claims are urgent (land grab) so they go to the FRONT; attacks and
+--   troop stationing go to the back.
+----------------------------------------------------------------
+local terrQueue = {}          -- list of { action=..., a=.., b=.., prio=bool, done=fn }
+local terrWorkerOn = false
+local terrBackoff = BACKOFF_START
+
+local function terrEnqueue(job, urgent)
+    if urgent then table.insert(terrQueue, 1, job) else terrQueue[#terrQueue+1] = job end
+end
+
+local function terrWorker()
+    if terrWorkerOn then return end
+    terrWorkerOn = true
+    task.spawn(function()
+        while not _G.CrewAutoRoll_Stop and #terrQueue > 0 do
+            local job = table.remove(terrQueue, 1)
+            local TA = getRemote("TerritoryAction")
+            local ok, res = pcall(function()
+                if job.b ~= nil then return TA:InvokeServer(job.action, job.a, job.b)
+                elseif job.a ~= nil then return TA:InvokeServer(job.action, job.a)
+                else return TA:InvokeServer(job.action) end
+            end)
+            local success = ok and type(res)=="table" and res.ok
+            -- detect rate-limit and back off, requeuing the job at the front
+            local limited = false
+            if ok and type(res)=="table" and not res.ok then
+                local msg = tostring(res.msg or ""):lower()
+                if msg:find("rate") or msg:find("slow") or msg:find("wait")
+                or msg:find("too fast") or msg:find("limit") then limited = true end
+            end
+            if limited then
+                stats.limited = true
+                table.insert(terrQueue, 1, job)      -- retry this one first
+                updatePanel("territory rate limited - waiting "..string.format("%.1f",terrBackoff).."s")
+                task.wait(terrBackoff)
+                terrBackoff = math.min(terrBackoff*BACKOFF_GROWTH, BACKOFF_MAX)
+            else
+                stats.limited = false
+                terrBackoff = BACKOFF_START
+                if job.done then pcall(job.done, success, res) end
+                task.wait(math.max(0.05, OPT.terrActionGap))
+            end
+        end
+        -- if we stopped (not just drained), discard any leftover jobs so a
+        -- later restart doesn't replay stale claims/attacks/stationings
+        if _G.CrewAutoRoll_Stop then terrQueue = {} end
+        terrWorkerOn = false
+    end)
+end
+
+local function terrFetchMap()
+    local TA = getRemote("TerritoryAction")
+    if not TA then return nil end
+    local ok, res = pcall(function() return TA:InvokeServer("map") end)
+    if ok and type(res)=="table" and res.ok and type(res.districts)=="table" then
+        return res.districts
+    end
+    return nil
+end
+
+-- score rival attack targets; higher = attack first
+local function terrAttackScore(d)
+    if OPT.terrTarget=="highest tier" then return (d.tier or 0) end
+    -- default "weakest": lowest current hp first (fastest to flip)
+    return -(d.hp or math.huge)
+end
+-- score claim targets
+local function terrClaimScore(d)
+    if OPT.terrTarget=="cheapest claim" then return -(d.claimCost or math.huge) end
+    if OPT.terrTarget=="highest tier"  then return (d.tier or 0) end
+    return (d.tier or 0) -- weakest doesn't apply to empty; prefer higher tier
+end
+
+local function terrFireClaim(id)
+    if terrInflight[id] then return end
+    terrInflight[id]=true
+    terrEnqueue({ action="claim", a=id, done=function(success,res)
+        if success then
+            stats.terrClaims=stats.terrClaims+1
+            updatePanel("CLAIMED district "..tostring(id))
+        end
+        terrInflight[id]=nil
+    end }, true)   -- claims are URGENT: jump to front of the queue
+    terrWorker()
+end
+local function terrFireAttack(id)
+    if terrInflight[id] then return end
+    terrInflight[id]=true
+    terrEnqueue({ action="attack", a=id, done=function(success,res)
+        if success then
+            stats.terrAttacks=stats.terrAttacks+1
+            if res and res.captured and res.capturedByMe then updatePanel("CAPTURED "..tostring(res.districtName or id))
+            else updatePanel("attacked "..tostring(id)) end
+        end
+        terrInflight[id]=nil
+    end })
+    terrWorker()
+end
+
+-- track which crew slots are already stationed somewhere (avoid re-stationing)
+local terrStationInflight = {}   -- crew slot idx -> true while a station call is pending
+
+-- station selected & free crew onto districts we HOLD that aren't full
+local function terrGarrisonPass(districts)
+    if not OPT.terrGarrison then return end
+    local data = getData()
+    local crew = (data and data.crew) or {}
+    local now  = os.time()
+
+    -- who is eligible: user-picked, exists, not busy, not injured, not already pending
+    local pool = {}
+    for i=1,#crew do
+        local m = crew[i]
+        if m and OPT.terrPicked[i] and m.rarity~=nil
+           and m.duty==nil and (m.injuredUntil or 0)<=now
+           and not terrStationInflight[i] then
+            table.insert(pool, i)
+        end
+    end
+    if #pool==0 then return end
+    -- station strongest picked first
+    table.sort(pool, function(a,b)
+        local ma,mb = crew[a],crew[b]
+        return ((ma.atk or 0)+(ma.def or 0)) > ((mb.atk or 0)+(mb.def or 0))
+    end)
+
+    local pi = 1
+    for _, d in ipairs(districts) do
+        if pi > #pool then break end
+        if d.mine then
+            local cap  = d.garrisonCap or 0
+            local have = d.garrisonCount or 0
+            local want = OPT.terrGarrisonFill and cap or math.min(OPT.terrGarrisonNum, cap)
+            local free = want - have
+            while free > 0 and pi <= #pool do
+                local slot = pool[pi]; pi = pi + 1
+                if not terrStationInflight[slot] then
+                    terrStationInflight[slot] = true
+                    local did = d.id
+                    local dname = d.name or ("district "..did)
+                    -- queue the station call (paced) instead of firing them all at once
+                    terrEnqueue({ action="station", a=did, b=slot, done=function(success,res)
+                        if success then
+                            updatePanel(("stationed %s -> %s"):format(
+                                (crew[slot] and crew[slot].name) or ("slot "..slot), dname))
+                        end
+                        -- clear after a moment so a failed placement can retry next pass
+                        task.delay(2, function() terrStationInflight[slot]=nil end)
+                    end })
+                    free = free - 1
+                end
+            end
+        end
+    end
+    if #terrQueue > 0 then terrWorker() end
+end
+
+local function terrLoop()
+    if terrRunning then return end
+    terrRunning = true
+    while not _G.CrewAutoRoll_Stop and OPT.terrEnabled do
+        local ok, err = pcall(function()
+            local districts = terrFetchMap()
+            if not districts then return end
+            local now = os.time()
+
+            -- how much stamina an attack costs, and how much I have right now
+            local attackCost = (Config and Config.TERRITORY and Config.TERRITORY.staminaCost) or 1
+            local myData = getData()
+            local myStamina = (myData and myData.pools and myData.pools.stamina) or 0
+            -- would attacking drop me below my reserve, or does one attack cost more than allowed?
+            local canAffordAttack = (attackCost <= OPT.terrMaxAttackCost)
+                                    and ((myStamina - attackCost) >= OPT.terrMinStamina)
+
+            -- gather actionable targets
+            local claimables, attackables = {}, {}
+            for _, d in ipairs(districts) do
+                if not d.mine then
+                    local shielded = (d.shieldUntil or 0) > (d.serverNow or now)
+                    if OPT.terrClaim and d.holderId==nil and not terrInflight[d.id] then
+                        table.insert(claimables, d)
+                    elseif OPT.terrAttack and canAffordAttack and d.holderId~=nil and not shielded and not terrInflight[d.id]
+                           and (d.garrisonCount or 0) < OPT.terrMaxDefenders
+                           and ((not OPT.terrUseWhitelist) or OPT.terrWhitelist[d.name]) then
+                        -- only siege lightly-defended districts (fewer than the threshold),
+                        -- when the attack cost is within max AND leaves my stamina reserve,
+                        -- and (when whitelist is on) only ones you've whitelisted by name
+                        table.insert(attackables, d)
+                    end
+                end
+            end
+
+            -- CLAIM: queue all unclaimed (best first). Claims are URGENT so they
+            -- jump the queue ahead of attacks/stationing and land as fast as pacing allows.
+            table.sort(claimables, function(a,b) return terrClaimScore(a)>terrClaimScore(b) end)
+            for _, d in ipairs(claimables) do terrFireClaim(d.id) end
+
+            -- ATTACK: focus the best target (attack costs stamina; don't spray)
+            if #attackables>0 then
+                table.sort(attackables, function(a,b) return terrAttackScore(a)>terrAttackScore(b) end)
+                terrFireAttack(attackables[1].id)
+            end
+
+            -- GARRISON: station selected free crew onto districts we hold
+            terrGarrisonPass(districts)
+        end)
+        if not ok then log("territory errored:", err) end
+        task.wait(OPT.terrPoll)
+    end
+    terrRunning = false
+end
+
+----------------------------------------------------------------
+-- MAIN LOOP
+----------------------------------------------------------------
+local running=false
+local function mainLoop()
+    if running then return end
+    running=true
+    -- run one module pass safely: a crash in ONE module can't kill the loop
+    local function safe(label, fn, ...)
+        local ok, err = pcall(fn, ...)
+        if not ok then
+            log("module '"..label.."' errored:", err)
+            updatePanel(label.." error (skipped)")
+        end
+        return ok
+    end
+    while not _G.CrewAutoRoll_Stop do
+        local data=getData()
+        local native=hasNativeAutoRoll()
+        local crewDone=false
+
+        if data then
+            modeLbl.Text = native and "Mode: NATIVE + jobs/bank/etc (any tab)" or "Mode: manual (any tab)"
+            if OPT.crewEnabled then
+                local ok, res = pcall(function()
+                    return native and crewPassNative(data) or (not native and crewPassManual(data))
+                end)
+                if ok then crewDone = res else log("crew errored:", res); updatePanel("crew error (skipped)") end
+            end
+            if OPT.jobsEnabled      and not _G.CrewAutoRoll_Stop then safe("jobs", jobsPassLive, getData() or data) end
+            if OPT.bankEnabled      and not _G.CrewAutoRoll_Stop then safe("bank", bankPass, getData() or data) end
+            if OPT.contractsEnabled and not _G.CrewAutoRoll_Stop then safe("contracts", contractsPass, getData() or data) end
+            if OPT.playtimeEnabled  and not _G.CrewAutoRoll_Stop then safe("playtime", playtimePass, getData() or data) end
+            if OPT.opsEnabled       and not _G.CrewAutoRoll_Stop then safe("ops", opsPass, getData() or data) end
+            if OPT.famEnabled       and not _G.CrewAutoRoll_Stop then safe("family perks", famPass) end
+        else
+            -- No data yet: the server pushes it over "Sync" periodically. It
+            -- usually arrives within a few seconds of joining / of any action.
+            -- We just wait; do NOT fall back to UI reading (crew needs data).
+            updatePanel("waiting for game data (Sync)...")
+            modeLbl.Text="Mode: waiting for data (Sync)..."
+        end
+
+        local continuous = OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled
+        if OPT.crewEnabled and crewDone and not continuous then
+            updatePanel("DONE - all crew targets!"); _G.CrewAutoRoll_Stop=true; break
+        end
+
+        -- start the fast territory loop on demand if toggled on mid-run
+        if OPT.terrEnabled and not terrRunning and not _G.CrewAutoRoll_Stop then
+            task.spawn(terrLoop)
+        end
+
+        if not _G.CrewAutoRoll_Stop then
+            updatePanel(stats.rolling>0 and ("server rolling "..stats.rolling.." slot(s)...") or "running")
+        end
+        if _G.CrewAutoRoll_Stop then break end
+        task.wait(OPT.loopDelay)
+    end
+    running=false
+    updatePanel("stopped")
+    btn.Text="START"; btn.BackgroundColor3=ONCOL
+end
+
+btn.Activated:Connect(function()
+    if _G.CrewAutoRoll_Stop then
+        if not (OPT.crewEnabled or OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled) then
+            updatePanel("enable a module first"); return
+        end
+        _G.CrewAutoRoll_Stop=false
+        btn.Text="STOP"; btn.BackgroundColor3=Color3.fromRGB(190,70,70)
+        if OPT.autoSaveConfig then pcall(SaveConfiguration) end
+        task.spawn(mainLoop)
+        if OPT.terrEnabled then task.spawn(terrLoop) end
     else
-        v1.BackgroundColor3 = p1 == v15 and v6 or v7
-        v1.TextColor3 = p1 == v15 and v8 or v9
+        _G.CrewAutoRoll_Stop=true
+        btn.Text="START"; btn.BackgroundColor3=ONCOL
+        updatePanel("stopping...")
+        if OPT.autoSaveConfig then pcall(SaveConfiguration) end
     end
-
-    local TabIcon = v1:FindFirstChild("TabIcon")
-
-    if TabIcon then
-        TabIcon.ImageColor3 = v1.TextColor3
-    end
-
-    local LockIcon = v1:FindFirstChild("LockIcon")
-
-    if LockIcon then
-        LockIcon.Visible = v2
-    end
-
-    local UIStroke = v1:FindFirstChildOfClass("UIStroke")
-
-    if UIStroke then
-        UIStroke.Color = v2 and v12 or v13
-    end
-
-    local UIPadding = v1:FindFirstChildOfClass("UIPadding")
-
-    if not UIPadding then
-        return
-    end
-
-    UIPadding.PaddingRight = v2 and v14 or UDim.new(0, v5)
-end
-
-local function refreshSidebarScale() --[[ refreshSidebarScale | Line: 299 | Upvalues: MafiaWarsUI (copy), v3 (ref), v4 (ref), v5 (ref), list (copy), t4 (copy), paintTabButton (copy), refreshTabTextSize (copy) ]]
-    local SideBar = MafiaWarsUI.Root.SideBar
-    local X = MafiaWarsUI.Root.AbsoluteSize.X
-
-    if X <= 0 then
-        return
-    end
-
-    local v1 = math.clamp(150 / X, 0.135, 0.24)
-    local Y = MafiaWarsUI.Root.AbsoluteSize.Y
-    local v2 = if Y > 0 then math.clamp(52 / Y, 0.115, 0.2) or 0.115 else 0.115
-    local v32 = 1 - v2
-
-    MafiaWarsUI.Root.TopBar.Size = UDim2.new(1, 0, v2, 0)
-    SideBar.Position = UDim2.new(0, 0, v2, 0)
-    SideBar.Size = UDim2.new(v1, 0, v32, 0)
-    MafiaWarsUI.Root.Content.Position = UDim2.new(v1, 0, v2, 0)
-    MafiaWarsUI.Root.Content.Size = UDim2.new(1 - v1, 0, v32, 0)
-    v3 = v1 * X
-
-    local v52 = math.min(v3 / 259, 1)
-
-    v4 = math.round(v52 * 44)
-    v5 = math.round(v52 * 30)
-
-    for i, v in ipairs(list) do
-        local v6 = t4[v]
-
-        v6.Size = UDim2.new(0.9, 0, 0, v4)
-
-        local TabIcon = v6:FindFirstChild("TabIcon")
-
-        if TabIcon then
-            TabIcon.Position = UDim2.new(0, -math.round(v52 * 8), 0.5, 0)
-        end
-
-        for i2, v7 in ipairs({ "Badge", "RefreshDot" }) do
-            local v72 = v6:FindFirstChild(v7)
-
-            if v72 then
-                v72.Position = UDim2.new(1, math.round(v52 * 26), 0.5, 0)
-            end
-        end
-
-        paintTabButton(v)
-    end
-
-    local UIListLayout = SideBar:FindFirstChildOfClass("UIListLayout")
-
-    if UIListLayout then
-        UIListLayout.Padding = UDim.new(0, (math.round(v52 * 6)))
-    end
-
-    local UIPadding = SideBar:FindFirstChildOfClass("UIPadding")
-
-    if UIPadding then
-        UIPadding.PaddingTop = UDim.new(0, (math.round(v52 * 12)))
-        UIPadding.PaddingBottom = UDim.new(0, (math.round(v52 * 12)))
-    end
-
-    refreshTabTextSize()
-end
-
-refreshSidebarScale()
-MafiaWarsUI.Root:GetPropertyChangedSignal("AbsoluteSize"):Connect(refreshSidebarScale)
-
-local LockTooltip = MafiaWarsUI.Root:WaitForChild("LockTooltip")
-
-local function showLockTooltip(p1) --[[ showLockTooltip | Line: 348 | Upvalues: MafiaWarsUI (copy), t4 (copy), LockTooltip (copy), Config (copy) ]]
-    if not MafiaWarsUI.Root.Modals.Visible then
-        local v1 = t4[p1]
-
-        LockTooltip.Title.Text = v1.Text
-        LockTooltip.Line.Text = "UNLOCKS AT LEVEL " .. (Config.TAB_UNLOCKS[p1] or 1)
-
-        local AbsolutePosition = MafiaWarsUI.Root.AbsolutePosition
-        local AbsolutePosition2 = v1.AbsolutePosition
-        local AbsoluteSize2 = v1.AbsoluteSize
-
-        LockTooltip.Position = UDim2.fromOffset(AbsolutePosition2.X + AbsoluteSize2.X - AbsolutePosition.X + 10, (math.clamp(AbsolutePosition2.Y + AbsoluteSize2.Y / 2 - AbsolutePosition.Y - LockTooltip.AbsoluteSize.Y / 2, 0, (math.max(0, MafiaWarsUI.Root.AbsoluteSize.Y - LockTooltip.AbsoluteSize.Y)))))
-        LockTooltip.Visible = true
-    end
-end
-
-local function hideLockTooltip() --[[ hideLockTooltip | Line: 364 | Upvalues: LockTooltip (copy) ]]
-    LockTooltip.Visible = false
-end
-
-MafiaWarsUI.Root.Modals:GetPropertyChangedSignal("Visible"):Connect(function() --[[ Line: 369 | Upvalues: MafiaWarsUI (copy), LockTooltip (copy) ]]
-    if not MafiaWarsUI.Root.Modals.Visible then
-        return
-    end
-
-    LockTooltip.Visible = false
 end)
+closeBtn.Activated:Connect(function() _G.CrewAutoRoll_Stop=true; task.wait(0.1); gui:Destroy() end)
 
-local function selectTab(p1) --[[ selectTab | Line: 375 | Upvalues: t6 (copy), Hud (copy), t4 (copy), Config (copy), v15 (ref), Sfx (copy), t7 (copy), list (copy), t3 (copy), paintTabButton (copy), t2 (copy), Guide (copy) ]]
-    if t6[p1] then
-        Hud.toast("error", t4[p1].Text .. " unlocks at Level " .. (Config.TAB_UNLOCKS[p1] or 1) .. ".")
+-- start listening for the server's data pushes right away
+primeData()
 
-        return
-    end
-
-    if v15 == p1 then
-        return
-    end
-
-    if v15 then
-        Sfx.play("Panel")
-    end
-
-    v15 = p1
-    Hud.markTabViewed(p1)
-
-    if t7[p1] then
-        t7[p1] = nil
-        Hud.setTabBadge(p1, 0)
-    end
-
-    for i, v in ipairs(list) do
-        t3[v].Visible = v == p1
-        paintTabButton(v)
-    end
-
-    local v3 = t2[p1]
-
-    if v3.onShow then
-        task.spawn(v3.onShow)
-    end
-
-    Guide.noteTab(p1)
-end
-
-t.selectTab = selectTab
-
-for i, v in ipairs(list) do
-    t4[v].Activated:Connect(function() --[[ Line: 403 | Upvalues: selectTab (copy), v (copy) ]]
-        selectTab(v)
-    end)
-    t4[v].MouseEnter:Connect(function() --[[ Line: 406 | Upvalues: t6 (copy), v (copy), showLockTooltip (copy) ]]
-        if not t6[v] then
-            return
+-- keep the mode line honest about whether data has arrived yet
+task.spawn(function()
+    while gui and gui.Parent do
+        local haveData = getData()~=nil
+        if not haveData then
+            modeLbl.Text = "Mode: waiting for data (Sync)..."
+        elseif hasNativeAutoRoll() then
+            modeLbl.Text = "Mode: NATIVE server roll (any tab)"
+        else
+            modeLbl.Text = "Mode: manual (any tab)"
         end
-
-        showLockTooltip(v)
-    end)
-    t4[v].MouseLeave:Connect(hideLockTooltip)
-end
-
-local t8 = {
-    Enum.KeyCode.One,
-    Enum.KeyCode.Two,
-    Enum.KeyCode.Three,
-    Enum.KeyCode.Four,
-    Enum.KeyCode.Five,
-    Enum.KeyCode.Six,
-    Enum.KeyCode.Seven,
-    Enum.KeyCode.Eight,
-    Enum.KeyCode.Nine,
-    Enum.KeyCode.Zero
-}
-
-local function tabForHotkey(p1) --[[ tabForHotkey | Line: 424 | Upvalues: list (copy), t4 (copy) ]]
-    local t = {}
-
-    for i, v in ipairs(list) do
-        if t4[v].Visible then
-            table.insert(t, v)
-        end
-    end
-
-    table.sort(t, function(p1, p2) --[[ Line: 431 | Upvalues: t4 (ref) ]]
-        return t4[p1].LayoutOrder < t4[p2].LayoutOrder
-    end)
-
-    return t[p1]
-end
-
-UserInputService.InputBegan:Connect(function(p1, p2) --[[ Line: 436 | Upvalues: MafiaWarsUI (copy), t8 (copy), tabForHotkey (copy), selectTab (copy) ]]
-    if p2 then
-        return
-    end
-
-    if MafiaWarsUI.Root.Modals.Visible then
-        return
-    end
-
-    for i, v in ipairs(t8) do
-        if p1.KeyCode == v then
-            local v1 = tabForHotkey(i)
-
-            if v1 then
-                selectTab(v1)
-            end
-
-            return
-        end
+        -- keep the garrison crew list fresh (names/stats/busy update live)
+        pcall(refreshCrewList)
+        task.wait(1)
     end
 end)
 
-local v16 = nil
-
-State.onChanged(function(p1) --[[ Line: 454 | Upvalues: v16 (ref), list (copy), t6 (copy), Config (copy), paintTabButton (copy), LockTooltip (copy), Hud (copy), t4 (copy), t7 (copy) ]]
-    local v1 = if v16 == nil then false else true
-
-    v16 = p1.level
-
-    for i, v in ipairs(list) do
-        local v2 = t6[v]
-        local v3 = if p1.level < (Config.TAB_UNLOCKS[v] or 1) then true else false
-
-        t6[v] = v3
-        paintTabButton(v)
-
-        if v2 and not v3 then
-            LockTooltip.Visible = false
-
-            if v1 then
-                Hud.toast("unlock", t4[v].Text .. " UNLOCKED")
-                t7[v] = true
-                Hud.setTabBadge(v, 1)
-            end
-        end
-    end
-end)
-selectTab("Safehouse")
-Guide.init(t)
-Remotes:WaitForChild("Sync").OnClientEvent:Connect(function(p1) --[[ Line: 477 | Upvalues: State (copy) ]]
-    State.set(p1)
-end)
-
-local function foldPingElapsed(p1, p2) --[[ foldPingElapsed | Line: 488 | Upvalues: GameData (copy) ]]
-    p1.serverNow = (p1.serverNow or os.time()) + p2
-
-    local v2 = p1.operations and p1.operations.active
-
-    if v2 then
-        for i, v in ipairs(v2) do
-            if type(v.remaining) == "number" and v.remaining > 0 then
-                v.remaining = math.max(0, v.remaining - p2)
-            end
-        end
-    end
-
-    if p1.playtime and type(p1.playtime.todaySeconds) == "number" then
-        local playtime = p1.playtime
-
-        playtime.todaySeconds = playtime.todaySeconds + p2
-    end
-
-    local sum = 0
-    local v4 = pairs
-
-    for v6, v7 in v4(p1.properties or {}) do
-        local v8 = GameData.PROPERTIES_BY_ID[v6]
-
-        if v8 and (v8.goldPerDay and (v7.owned and v7.owned > 0)) then
-            sum = sum + v8.goldPerDay * v7.owned
-        end
-    end
-
-    if sum > 0 then
-        p1.goldAcc = (p1.goldAcc or 0) + sum * p2 / 86400
-    end
-
-    p1.away = nil
+-- auto-load the "default" config on startup if one exists
+if isfile and isfile(configPath()) then
+    pcall(LoadConfiguration)
 end
 
-Remotes:WaitForChild("IncomeTick").OnClientEvent:Connect(function(p1) --[[ Line: 519 | Upvalues: State (copy), foldPingElapsed (copy) ]]
-    local v1 = State.latest()
-
-    if not v1 or (type(p1) ~= "number" or not (p1 > 0)) then
-        return
-    end
-
-    local v2 = State.sinceSync()
-
-    v1.cash = v1.cash + p1
-    v1.accAge = (v1.accAge or 0) + v2
-    foldPingElapsed(v1, v2)
-    State.set(v1)
-end)
-Remotes:WaitForChild("PoolsTick").OnClientEvent:Connect(function(p1, p2, p3, p4, p5, p6) --[[ Line: 535 | Upvalues: State (copy), foldPingElapsed (copy) ]]
-    local v1 = State.latest()
-
-    if not (v1 and (v1.pools and v1.acc)) then
-        return
-    end
-
-    if type(p1) ~= "number" or (type(p2) ~= "number" or type(p3) ~= "number") then
-        return
-    end
-
-    local v2 = State.sinceSync()
-
-    v1.pools.energy = p1
-    v1.pools.stamina = p2
-    v1.pools.health = p3
-
-    if type(p4) == "number" then
-        v1.acc.energy = p4
-    end
-
-    if type(p5) == "number" then
-        v1.acc.stamina = p5
-    end
-
-    if type(p6) == "number" then
-        v1.acc.health = p6
-    end
-
-    v1.accAge = 0
-    foldPingElapsed(v1, v2)
-    State.set(v1)
-end)
-Remotes:WaitForChild("AutoRollTick").OnClientEvent:Connect(function(p1, p2) --[[ Line: 554 | Upvalues: State (copy), foldPingElapsed (copy) ]]
-    local v1 = State.latest()
-
-    if not v1 or (not v1.crew or type(p2) ~= "table") then
-        return
-    end
-
-    local v2 = State.sinceSync()
-
-    if type(p1) == "number" then
-        v1.cash = p1
-    end
-
-    v1.autoRolls = v1.autoRolls or {}
-
-    for k, v in pairs(p2) do
-        local v4 = tonumber(k)
-        local v5 = tonumber(k) and v1.crew[v4] or nil
-
-        if v5 and type(v) == "table" then
-            v5.name = v.name
-            v5.rarity = v.rarity
-            v5.atk = v.atk
-            v5.def = v.def
-            v5.rolling = true
-            v1.autoRolls[tostring(v4)] = {
-                tier = v.tier,
-                target = v.target,
-                rolls = v.rolls,
-                spent = v.spent
-            }
-        end
-    end
-
-    v1.accAge = (v1.accAge or 0) + v2
-    foldPingElapsed(v1, v2)
-    State.set(v1)
-end)
-Remotes:WaitForChild("Notify").OnClientEvent:Connect(function(p1, p2, p3) --[[ Line: 578 | Upvalues: Hud (copy) ]]
-    Hud.toast(p1, p2, p3)
-end)
+log("Ready. modules="..tostring(ensureModules()).." (waiting for first Sync push for live data)")
+updatePanel("idle - press START")
