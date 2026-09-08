@@ -149,6 +149,17 @@ local OPT = {
     bossMinStamina  = 0,           -- keep at least this much stamina in reserve
     bossRepeat      = true,        -- keep farming the same boss after it respawns (else move to next)
 
+    -- Auto-Attack players (Fight tab / hit list)
+    atkEnabled      = false,
+    atkMaxStamina   = 1,           -- stamina-cost target (1/2/3...); meaning set by atkStaminaMode
+    atkStaminaMode  = "upto",      -- "upto" = cost <= value | "exact" = cost == value only
+    atkMinStamina   = 0,           -- keep at least this much stamina in reserve
+    atkMinHealth    = 30,          -- stop attacking if MY health <= this (avoid the hospital)
+    atkPreferOffline= true,        -- prefer offline targets (steal 10% vs 5%) when choosing
+    atkSkipShielded = true,        -- skip targets that are currently shielded
+    atkWarOnly      = false,       -- only attack WAR TARGETS (family war list)
+    atkKeepShield   = false,       -- if true, never attack while MY defensive shield is active
+
     -- General
     callGap         = 0.35,
     loopDelay       = 0.6,
@@ -232,6 +243,7 @@ end
 local stats = { kept=0, rolling=0, dismissed=0, hired=0, jobs=0,
                 banked=0, contracts=0, playtime=0, opsStarted=0, opsCollected=0,
                 terrClaims=0, terrAttacks=0, famPerks=0, bossHits=0, bossKills=0,
+                pvpAttacks=0, pvpWins=0, pvpStolen=0,
                 remaining=0, limited=false }
 local function fmtMoney(n)
     n = tonumber(n) or 0
@@ -846,6 +858,27 @@ cycleRow("Keep stamina >=", function() return OPT.bossMinStamina end,
     function() OPT.bossMinStamina=OPT.bossMinStamina+1 end,"-","+")
 toggleRow("Keep farming (else next boss)", function() return OPT.bossRepeat end, function(v) OPT.bossRepeat=v end)
 mklabel(rowFrame(28),"Strongest = highest unlocked boss. Locked/recovering bosses are skipped.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+
+-- AUTO ATTACK PLAYERS
+sectionHeader("AUTO ATTACK PLAYERS")
+toggleRow("Enabled", function() return OPT.atkEnabled end, function(v) OPT.atkEnabled=v end)
+cycleRow("Stamina match", function() return OPT.atkStaminaMode=="exact" and "exactly" or "up to" end,
+    function() OPT.atkStaminaMode = OPT.atkStaminaMode=="exact" and "upto" or "exact" end,
+    function() OPT.atkStaminaMode = OPT.atkStaminaMode=="exact" and "upto" or "exact" end,"<",">")
+cycleRow("Stamina cost", function() return OPT.atkMaxStamina end,
+    function() OPT.atkMaxStamina=math.max(1,OPT.atkMaxStamina-1) end,
+    function() OPT.atkMaxStamina=OPT.atkMaxStamina+1 end,"-","+")
+cycleRow("Keep stamina >=", function() return OPT.atkMinStamina end,
+    function() OPT.atkMinStamina=math.max(0,OPT.atkMinStamina-1) end,
+    function() OPT.atkMinStamina=OPT.atkMinStamina+1 end,"-","+")
+cycleRow("Stop if health <=", function() return OPT.atkMinHealth end,
+    function() OPT.atkMinHealth=math.max(0,OPT.atkMinHealth-5) end,
+    function() OPT.atkMinHealth=OPT.atkMinHealth+5 end,"-","+")
+toggleRow("Prefer offline (steal 10%)", function() return OPT.atkPreferOffline end, function(v) OPT.atkPreferOffline=v end)
+toggleRow("Skip shielded targets", function() return OPT.atkSkipShielded end, function(v) OPT.atkSkipShielded=v end)
+toggleRow("War targets only", function() return OPT.atkWarOnly end, function(v) OPT.atkWarOnly=v end)
+toggleRow("Hold while MY shield active", function() return OPT.atkKeepShield end, function(v) OPT.atkKeepShield=v end)
+mklabel(rowFrame(28),"'up to' = cost <= value; 'exactly' = only that exact cost. Targets refresh every ~10s.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
 -- GENERAL
 sectionHeader("GENERAL")
@@ -1563,6 +1596,141 @@ local function bossPass()
 end
 
 ----------------------------------------------------------------
+-- AUTO-ATTACK PLAYERS  (Fight tab / hit list)
+--   GetHitList:InvokeServer(force) -> { ok, list[], warTargets[], cooldown, msg }
+--     each target: { userId, name, level, respect, online, stamina, shielded }
+--       * stamina  = stamina COST to attack this target (1 / 2 / 3 ...)
+--       * shielded = seconds of shield left on THEM (skip if > 0)
+--       * online   -> steal 5%, offline -> steal 10%
+--   Attack:InvokeServer(userId) -> { ok, won, stolen, xp, respect, dmg,
+--                                    knockout, retryIn, dmgTaken, msg, ... }
+--   Server refreshes targets every ~10s and enforces a per-target cooldown.
+----------------------------------------------------------------
+local pvpCooldown = {}      -- userId -> os.clock() time we may hit them again
+local pvpHitCache = nil     -- cached hit list; refreshed on a timer
+local pvpHitAt   = 0
+
+-- pull a fresh hit list from the server (rate-limited to ~ every 10s to match
+-- the server's own refresh cadence)
+local function pvpGetTargets(force)
+    local GHL=getRemote("GetHitList"); if not GHL then return nil end
+    local now=os.clock()
+    if not force and pvpHitCache and (now-pvpHitAt)<10 then return pvpHitCache end
+    local ok,res=pcall(function() return GHL:InvokeServer(false) end)
+    if not ok or type(res)~="table" or not res.ok then return pvpHitCache end
+    pvpHitCache=res; pvpHitAt=now
+    return res
+end
+
+-- gather the eligible pool honoring stamina cost / shield / war-only / cooldown
+local function pvpEligible(res)
+    local pool={}
+    local now=os.clock()
+    local function consider(v, isWar)
+        if not v or not v.userId then return end
+        local cost=v.stamina or 1
+        if OPT.atkStaminaMode=="exact" then
+            if cost ~= OPT.atkMaxStamina then return end       -- must match exactly
+        else
+            if cost > OPT.atkMaxStamina then return end        -- costs too much stamina
+        end
+        if (pvpCooldown[v.userId] or 0) > now then return end  -- still on our cooldown
+        if OPT.atkSkipShielded and type(v.shielded)=="number" and v.shielded>0 then return end
+        table.insert(pool, {t=v, war=isWar, cost=cost})
+    end
+    for _,v in ipairs(res.warTargets or {}) do consider(v,true) end
+    if not OPT.atkWarOnly then
+        for _,v in ipairs(res.list or {}) do consider(v,false) end
+    end
+    -- rank: war targets first; then cheapest stamina; then prefer offline
+    -- (10% steal vs 5%) if asked; then highest respect
+    table.sort(pool, function(a,b)
+        if a.war~=b.war then return a.war end
+        if a.cost~=b.cost then return a.cost<b.cost end
+        if OPT.atkPreferOffline then
+            local ao=a.t.online and 1 or 0; local bo=b.t.online and 1 or 0
+            if ao~=bo then return ao<bo end
+        end
+        return (a.t.respect or 0) > (b.t.respect or 0)
+    end)
+    return pool
+end
+
+local function pvpPass()
+    local data=getData(); if not data then return end
+    local ATK=getRemote("Attack"); if not ATK then return end
+
+    -- safety: don't attack while low on health (avoid the hospital) or below reserve
+    local health=(data.pools and data.pools.health) or 0
+    local stamina=(data.pools and data.pools.stamina) or 0
+    if health <= OPT.atkMinHealth then
+        updatePanel(("attack: health low (%d) - waiting to heal"):format(math.floor(health)))
+        return
+    end
+    if stamina <= OPT.atkMinStamina then
+        updatePanel("attack: stamina reserve reached - waiting")
+        return
+    end
+
+    -- optionally hold fire while our own defensive shield is up (attacking drops it)
+    if OPT.atkKeepShield then
+        local nowSrv=(data.serverNow or os.time())+sinceSync()
+        if (data.shieldUntil or 0) > nowSrv then
+            updatePanel("attack: my shield is active - holding")
+            return
+        end
+    end
+
+    local res=pvpGetTargets(false)
+    if not res then updatePanel("attack: no hit list yet") return end
+    local pool=pvpEligible(res)
+    if #pool==0 then
+        updatePanel(("attack: no targets %s %d stamina"):format(
+            OPT.atkStaminaMode=="exact" and "at exactly" or "<=", OPT.atkMaxStamina))
+        return
+    end
+
+    local pick=pool[1].t
+    -- don't spend below the reserve on this specific hit
+    if stamina - (pool[1].cost or 1) < OPT.atkMinStamina then
+        updatePanel("attack: would dip below stamina reserve - waiting")
+        return
+    end
+
+    local ok,rep=pcall(function() return ATK:InvokeServer(pick.userId) end)
+    if not ok or type(rep)~="table" then task.wait(OPT.callGap); return end
+    if not rep.ok then
+        -- server told us to back off on this target
+        if rep.retryIn then pvpCooldown[pick.userId]=os.clock()+rep.retryIn end
+        local msg=tostring(rep.msg or ""):lower()
+        if msg:find("rate") or msg:find("slow") or msg:find("limit") then
+            stats.limited=true; task.wait(backoff)
+            backoff=math.min(backoff*BACKOFF_GROWTH,BACKOFF_MAX)
+        elseif rep.msg then updatePanel("attack: "..tostring(rep.msg)) end
+        return
+    end
+    stats.limited=false; backoff=BACKOFF_START
+
+    -- apply the game's per-target cooldown so we rotate to other targets
+    local cfg=getConfig()
+    local cd=(cfg and cfg.COMBAT and cfg.COMBAT.targetCooldown) or 30
+    pvpCooldown[pick.userId]=os.clock()+cd
+
+    stats.pvpAttacks=stats.pvpAttacks+1
+    if rep.won then
+        stats.pvpWins=stats.pvpWins+1
+        stats.pvpStolen=stats.pvpStolen+(rep.stolen or 0)
+        updatePanel(("BEAT %s  +%s  (%d stamina)%s"):format(
+            pick.name or ("#"..tostring(pick.userId)), fmtMoney(rep.stolen or 0),
+            pool[1].cost or 1, rep.knockout and " KO!" or ""))
+    else
+        updatePanel(("lost to %s  (-%s hp)"):format(
+            pick.name or ("#"..tostring(pick.userId)), tostring(rep.dmgTaken or 0)))
+    end
+    task.wait(OPT.callGap)
+end
+
+----------------------------------------------------------------
 -- TERRITORY  (its OWN fast loop - speed matters, rivals compete)
 --   TerritoryAction("map")     -> { ok, districts[], orders }
 --   TerritoryAction("claim",id)-> grab an UNCLAIMED district
@@ -1828,6 +1996,7 @@ local function mainLoop()
             if OPT.opsEnabled       and not _G.CrewAutoRoll_Stop then safe("ops", opsPass, getData() or data) end
             if OPT.famEnabled       and not _G.CrewAutoRoll_Stop then safe("family perks", famPass) end
             if OPT.bossEnabled      and not _G.CrewAutoRoll_Stop then safe("bosses", bossPass) end
+            if OPT.atkEnabled       and not _G.CrewAutoRoll_Stop then safe("attack", pvpPass) end
         else
             -- No data yet: the server pushes it over "Sync" periodically. It
             -- usually arrives within a few seconds of joining / of any action.
@@ -1836,7 +2005,7 @@ local function mainLoop()
             modeLbl.Text="Mode: waiting for data (Sync)..."
         end
 
-        local continuous = OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled
+        local continuous = OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled or OPT.atkEnabled
         if OPT.crewEnabled and crewDone and not continuous then
             updatePanel("DONE - all crew targets!"); _G.CrewAutoRoll_Stop=true; break
         end
@@ -1859,7 +2028,7 @@ end
 
 btn.Activated:Connect(function()
     if _G.CrewAutoRoll_Stop then
-        if not (OPT.crewEnabled or OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled) then
+        if not (OPT.crewEnabled or OPT.jobsEnabled or OPT.bankEnabled or OPT.contractsEnabled or OPT.playtimeEnabled or OPT.opsEnabled or OPT.terrEnabled or OPT.famEnabled or OPT.bossEnabled or OPT.atkEnabled) then
             updatePanel("enable a module first"); return
         end
         _G.CrewAutoRoll_Stop=false
