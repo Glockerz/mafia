@@ -26,378 +26,379 @@ number,blurRadius:number})->()type ParallelWorkerState={Actor:Actor,Slot:number,
 RowNext:number,RowEnd:number,AwaitingRows:number}type ParallelPending={PassId:
 number,Job:ReconJob,Results:SharedTable,Workers:{ParallelWorkerState},
 FramesWaited:number}type GlassObject={Window:GuiObject,Pane:ImageLabel,
-EditableImage:EditableImage?,WarnedImageCreateFailure:boolean,Initialized:
-boolean,Parented:boolean,Pixels:buffer,Scratch:buffer,PixelCount:number,
-PixelIndex:number,Resolution:Vector2,ResolutionX:number,GridPosX:buffer?,
-GridPosY:buffer?,WarpLutX:buffer?,WarpLutY:buffer?,WarpKey:string?,
-WindowPositionX:number,WindowPositionY:number,WindowColor:{number},BlurRadius:
-number,Paused:boolean,LiquidParams:LiquidParams?,Geometry:GeometryEntry?,
-OutputResolution:Vector2,OutPixels:buffer?,OutBlend:buffer?,ReconJob:ReconJob?,
-ParallelJob:ParallelPending?,ParallelId:number,MapsGeneration:number,FinishToken
-:{}?,ForceRecon:boolean,GridWritesSinceRecon:number,FramesSinceRecon:number,
-SamplesLastFrame:number,PendingLayout:boolean,LastLayoutRequestClock:number,
-FirstLayoutRequestClock:number,LadderCap:number,UICornerConnection:
-RBXScriptConnection?,Connections:{RBXScriptConnection}}type DebugStats={
-GridResolution:Vector2,OutputResolution:Vector2,SamplesLastFrame:number,
-GridWritesSinceRecon:number,FramesSinceRecon:number,ReconRoute:'parallel'|'sync'
-|'idle'}local PixelColorApproximation=(function()local Utils=(function()local
-AssetService=game:GetService('AssetService')local Utils={}function Utils.
-worldToLocal(vector,position,size,rotation)local translated=vector-position
-local cosAngle=math.cos(-rotation)local sinAngle=math.sin(-rotation)local
-rotatedX=cosAngle*translated.X-sinAngle*translated.Y local rotatedY=sinAngle*
-translated.X+cosAngle*translated.Y local scaledX=rotatedX/size.X local scaledY=
-rotatedY/size.Y return Vector2.new(scaledX,scaledY)end Utils.
-IMAGE_DOWNSCALE_FACTOR=0.75 Utils.IMAGE_CACHE={}::{[string]:ImageRecord}local
-loadingAssets:{[string]:boolean}={}local function buildMipLevels(pixels:buffer,
-width:number,height:number):{ImageLevel}local levels:{ImageLevel}={{pixels=
-pixels,width=width,height=height}}while(width>1 or height>1)and#levels<8 do
-local newWidth,newHeight=math.max(1,width//2),math.max(1,height//2)local reduced
-=buffer.create(newWidth*newHeight*4)for y=0,newHeight-1 do local y0=math.min(y*2
-,height-1)local y1=math.min(y*2+1,height-1)for x=0,newWidth-1 do local x0=math.
-min(x*2,width-1)local x1=math.min(x*2+1,width-1)local i00=(y0*width+x0)*4 local
-i10=(y0*width+x1)*4 local i01=(y1*width+x0)*4 local i11=(y1*width+x1)*4 local
-target=(y*newWidth+x)*4 for channel=0,3 do local sum=buffer.readu8(pixels,i00+
-channel)+buffer.readu8(pixels,i10+channel)+buffer.readu8(pixels,i01+channel)+
-buffer.readu8(pixels,i11+channel)buffer.writeu8(reduced,target+channel,(sum+2)//
-4)end end end table.insert(levels,{pixels=reduced,width=newWidth,height=
-newHeight})pixels,width,height=reduced,newWidth,newHeight end return levels end
-local function loadImageAsync(assetUri:string,assetId:string)pcall(function()
-local fullImage=AssetService:CreateEditableImageAsync(Content.fromUri(assetUri))
-local downscaledSize=Vector2.new(math.max(1,math.floor(fullImage.Size.X*Utils.
-IMAGE_DOWNSCALE_FACTOR)),math.max(1,math.floor(fullImage.Size.Y*Utils.
-IMAGE_DOWNSCALE_FACTOR)))local downscaled=AssetService:CreateEditableImage({Size
-=downscaledSize})downscaled:DrawImageTransformed(Vector2.zero,downscaledSize/
-fullImage.Size,0,fullImage,{CombineType=Enum.ImageCombineType.Overwrite,
-PivotPoint=Vector2.zero})fullImage:Destroy()local pixels=downscaled:
-ReadPixelsBuffer(Vector2.zero,downscaledSize)downscaled:Destroy()Utils.
-IMAGE_CACHE[assetId]={pixels=pixels,width=downscaledSize.X,height=downscaledSize
-.Y,levels=buildMipLevels(pixels,downscaledSize.X,downscaledSize.Y)}end)
-loadingAssets[assetId]=nil end function Utils.getImage(source:string|Instance):(
-ImageRecord?,boolean?)local assetUri:string local sourceType=typeof(source)if
-sourceType=='string'then assetUri=source::string elseif sourceType=='Instance'
-then local sourceInstance=source::Instance if sourceInstance:IsA('ImageLabel')or
-sourceInstance:IsA('ImageButton')then local content=sourceInstance.ImageContent
-if content.SourceType==Enum.ContentSourceType.Object then local object=content.
-Object if object and object:IsA('EditableImage')then local size=object.Size
-return{editable=object,width=size.X,height=size.Y},false end return end assetUri
-=sourceInstance.Image elseif sourceInstance:IsA('Texture')or sourceInstance:IsA(
-'Decal')then assetUri=sourceInstance.Texture elseif sourceInstance:IsA(
-'SurfaceAppearance')then assetUri=sourceInstance.ColorMap end else return end if
-assetUri==nil or assetUri==''then return end local assetId:string?=string.match(
-assetUri,'%d+$')if assetId==nil then return end if Utils.IMAGE_CACHE[assetId]
-then return Utils.IMAGE_CACHE[assetId],true end if not loadingAssets[assetId]
-then loadingAssets[assetId]=true task.spawn(loadImageAsync,assetUri,assetId)end
-return end local function bilinearAt(pixels:buffer,width:number,height:number,u:
-number,v:number):(number,number,number,number)local px=math.clamp(u*width-0.5,0,
-width-1)local py=math.clamp(v*height-0.5,0,height-1)local x0=px//1 local y0=py//
-1 local fx=px-x0 local fy=py-y0 local x1=math.min(x0+1,width-1)local y1=math.
-min(y0+1,height-1)local w11=fx*fy local w10=fx-w11 local w01=fy-w11 local w00=1-
-fx-fy+w11 local i00=(y0*width+x0)*4 local i10=(y0*width+x1)*4 local i01=(y1*
-width+x0)*4 local i11=(y1*width+x1)*4 local r=buffer.readu8(pixels,i00)*w00+
-buffer.readu8(pixels,i10)*w10+buffer.readu8(pixels,i01)*w01+buffer.readu8(pixels
-,i11)*w11 local g=buffer.readu8(pixels,i00+1)*w00+buffer.readu8(pixels,i10+1)*
-w10+buffer.readu8(pixels,i01+1)*w01+buffer.readu8(pixels,i11+1)*w11 local b=
-buffer.readu8(pixels,i00+2)*w00+buffer.readu8(pixels,i10+2)*w10+buffer.readu8(
-pixels,i01+2)*w01+buffer.readu8(pixels,i11+2)*w11 local a=buffer.readu8(pixels,
-i00+3)*w00+buffer.readu8(pixels,i10+3)*w10+buffer.readu8(pixels,i01+3)*w01+
-buffer.readu8(pixels,i11+3)*w11 return r,g,b,a end function Utils.
-readPixelBilinear(image:ImageRecord,u:number,v:number):(number,number,number,
-number)local pixels=image.pixels if pixels then local r,g,b,a=bilinearAt(pixels,
-image.width,image.height,u,v)return r/255,g/255,b/255,a/255 end local width,
-height=image.width,image.height local px=math.clamp(u*width-0.5,0,width-1)local
-py=math.clamp(v*height-0.5,0,height-1)local x0=px//1 local y0=py//1 local x1=
-math.min(x0+1,width-1)local y1=math.min(y0+1,height-1)local blockW=x1-x0+1 local
-block=(image.editable::EditableImage):ReadPixelsBuffer(Vector2.new(x0,y0),
-Vector2.new(blockW,y1-y0+1))local fx=px-x0 local fy=py-y0 local w11=fx*fy local
-w10=fx-w11 local w01=fy-w11 local w00=1-fx-fy+w11 local i10=(blockW-1)*4 local
-i01=(y1-y0)*blockW*4 local i11=i01+i10 local r=buffer.readu8(block,0)*w00+buffer
-.readu8(block,i10)*w10+buffer.readu8(block,i01)*w01+buffer.readu8(block,i11)*w11
-local g=buffer.readu8(block,1)*w00+buffer.readu8(block,i10+1)*w10+buffer.readu8(
-block,i01+1)*w01+buffer.readu8(block,i11+1)*w11 local b=buffer.readu8(block,2)*
-w00+buffer.readu8(block,i10+2)*w10+buffer.readu8(block,i01+2)*w01+buffer.readu8(
-block,i11+2)*w11 local a=buffer.readu8(block,3)*w00+buffer.readu8(block,i10+3)*
-w10+buffer.readu8(block,i01+3)*w01+buffer.readu8(block,i11+3)*w11 return r/255,g
-/255,b/255,a/255 end function Utils.readPixelFiltered(image:ImageRecord,u:number
-,v:number,footprintTexels:number):(number,number,number,number)local levels=
-image.levels if not levels or footprintTexels<=1 then return Utils.
-readPixelBilinear(image,u,v)end local level=math.log(footprintTexels,2)local
-topIndex=#levels if level>=topIndex-1 then local top=levels[topIndex]local r,g,b
-,a=bilinearAt(top.pixels,top.width,top.height,u,v)return r/255,g/255,b/255,a/255
-end local lowIndex=level//1 local fraction=level-lowIndex local low=levels[
-lowIndex+1]local high=levels[lowIndex+2]local lowR,lowG,lowB,lowA=bilinearAt(low
-.pixels,low.width,low.height,u,v)local highR,highG,highB,highA=bilinearAt(high.
-pixels,high.width,high.height,u,v)return(lowR+(highR-lowR)*fraction)/255,(lowG+(
-highG-lowG)*fraction)/255,(lowB+(highB-lowB)*fraction)/255,(lowA+(highA-lowA)*
-fraction)/255 end function Utils.getSkyboxFaceAndCoords(lookDirection:Vector3):(
-string,number,number)local absX=math.abs(lookDirection.X)local absY=math.abs(
-lookDirection.Y)local absZ=math.abs(lookDirection.Z)local face,u,v if absX>absY
-and absX>absZ then if lookDirection.X<0 then face='SkyboxRt'u=1-(lookDirection.Z
-/absX+1)/2 v=(lookDirection.Y/absX+1)/2 else face='SkyboxLf'u=(lookDirection.Z/
-absX+1)/2 v=(lookDirection.Y/absX+1)/2 end elseif absY>absZ then if
-lookDirection.Y>0 then face='SkyboxUp'u=1-(lookDirection.Z/absY+1)/2 v=(
-lookDirection.X/absY+1)/2 else face='SkyboxDn'u=1-(lookDirection.Z/absY+1)/2 v=1
--(lookDirection.X/absY+1)/2 end else if lookDirection.Z<0 then face='SkyboxFt'u=
-(lookDirection.X/absZ+1)/2 v=(lookDirection.Y/absZ+1)/2 else face='SkyboxBk'u=1-
-(lookDirection.X/absZ+1)/2 v=(lookDirection.Y/absZ+1)/2 end end v=1-v return
-face,u,v end return Utils end)()local ClassHandlers=(function()local
-describeDefault=(function()local function sample(record)return record.r,record.g
-,record.b,record.a end local function describe(gui)local backgroundColor=gui.
-BackgroundColor3 local r,g,b,a=backgroundColor.R,backgroundColor.G,
-backgroundColor.B,1-gui.BackgroundTransparency local gradient=gui:
-FindFirstChildWhichIsA('UIGradient')if gradient then local colorKeypoint=
-gradient.Color.Keypoints[1]local alphaKeypoint=gradient.Transparency.Keypoints[1
-]r*=colorKeypoint.Value.R g*=colorKeypoint.Value.G b*=colorKeypoint.Value.B a*=1
--alphaKeypoint.Value end return{sample=sample,r=r,g=g,b=b,a=a}end return
-describe end)()local describeImage=(function()local function sample(record,x,y,
-footprint)local r,g,b,a=record.r,record.g,record.b,record.a local image=record.
-image if not image then return r,g,b,a end local translatedX=x-record.posX local
-translatedY=y-record.posY local objectX=(record.cos*translatedX-record.sin*
-translatedY)*record.invSizeX local objectY=(record.sin*translatedX+record.cos*
-translatedY)*record.invSizeY local fitAxis=record.fitAxis if fitAxis=='y'then if
-objectY<record.fitMin or objectY>record.fitMax then return r,g,b,a end objectY=(
-objectY-record.fitMin)/record.fitRange elseif fitAxis=='x'then if objectX<record
-.fitMin or objectX>record.fitMax then return r,g,b,a end objectX=(objectX-record
-.fitMin)/record.fitRange end local rectScaleX,rectScaleY=record.rectScaleX,
-record.rectScaleY if rectScaleX~=0 or rectScaleY~=0 then objectX=math.clamp(
-objectX*rectScaleX+record.rectPosX,0,1)objectY=math.clamp(objectY*rectScaleY+
-record.rectPosY,0,1)end if objectX<0 or objectX>1 or objectY<0 or objectY>1 then
-return r,g,b,a end local imageR,imageG,imageB,imageA=Utils.readPixelFiltered(
-image,objectX,objectY,(footprint or 1)*record.texelScale)imageR*=record.multR
-imageG*=record.multG imageB*=record.multB imageA*=record.alphaMult return(1-
-imageA)*(r*a)+imageA*imageR,(1-imageA)*(g*a)+imageA*imageG,(1-imageA)*(b*a)+
-imageA*imageB,math.max(imageA,a)end local function describe(gui)local record=
-describeDefault(gui)record.sample=sample record.image=nil local
-imageTransparency=gui.ImageTransparency if imageTransparency==1 then return
-record end if gui.ImageContent.SourceType~=Enum.ContentSourceType.Object and(gui
-.Image==''or gui.IsLoaded==false)then return record end local image,isDownscaled
-=Utils.getImage(gui)if not image then return record end record.image=image local
-absolutePosition,absoluteSize=gui.AbsolutePosition,gui.AbsoluteSize local
-rotation=math.rad(gui.Rotation)record.posX,record.posY=absolutePosition.X,
-absolutePosition.Y record.cos,record.sin=math.cos(-rotation),math.sin(-rotation)
-record.invSizeX,record.invSizeY=1/absoluteSize.X,1/absoluteSize.Y local
-imageWidth,imageHeight=image.width,image.height local objectWidth,objectHeight=
-absoluteSize.X,absoluteSize.Y record.fitAxis=nil if gui.ScaleType==Enum.
-ScaleType.Fit then if objectWidth<=objectHeight then local imageSizeInObject=
-objectWidth/imageWidth*imageHeight local minimumObjectSpace=((objectHeight-
-imageSizeInObject)/2)/objectHeight record.fitAxis='y'record.fitMin=
+EditableImage:EditableImage?,WarnedImageCreateFailure:boolean,
+UseGradientFallback:boolean,GradientPane:any,Initialized:boolean,Parented:
+boolean,Pixels:buffer,Scratch:buffer,PixelCount:number,PixelIndex:number,
+Resolution:Vector2,ResolutionX:number,GridPosX:buffer?,GridPosY:buffer?,WarpLutX
+:buffer?,WarpLutY:buffer?,WarpKey:string?,WindowPositionX:number,WindowPositionY
+:number,WindowColor:{number},BlurRadius:number,Paused:boolean,LiquidParams:
+LiquidParams?,Geometry:GeometryEntry?,OutputResolution:Vector2,OutPixels:buffer?
+,OutBlend:buffer?,ReconJob:ReconJob?,ParallelJob:ParallelPending?,ParallelId:
+number,MapsGeneration:number,FinishToken:{}?,ForceRecon:boolean,
+GridWritesSinceRecon:number,FramesSinceRecon:number,SamplesLastFrame:number,
+PendingLayout:boolean,LastLayoutRequestClock:number,FirstLayoutRequestClock:
+number,LadderCap:number,UICornerConnection:RBXScriptConnection?,Connections:{
+RBXScriptConnection}}type DebugStats={GridResolution:Vector2,OutputResolution:
+Vector2,SamplesLastFrame:number,GridWritesSinceRecon:number,FramesSinceRecon:
+number,ReconRoute:'parallel'|'sync'|'idle'}local PixelColorApproximation=(
+function()local Utils=(function()local AssetService=game:GetService(
+'AssetService')local Utils={}function Utils.worldToLocal(vector,position,size,
+rotation)local translated=vector-position local cosAngle=math.cos(-rotation)
+local sinAngle=math.sin(-rotation)local rotatedX=cosAngle*translated.X-sinAngle*
+translated.Y local rotatedY=sinAngle*translated.X+cosAngle*translated.Y local
+scaledX=rotatedX/size.X local scaledY=rotatedY/size.Y return Vector2.new(scaledX
+,scaledY)end Utils.IMAGE_DOWNSCALE_FACTOR=0.75 Utils.IMAGE_CACHE={}::{[string]:
+ImageRecord}local loadingAssets:{[string]:boolean}={}local function 
+buildMipLevels(pixels:buffer,width:number,height:number):{ImageLevel}local
+levels:{ImageLevel}={{pixels=pixels,width=width,height=height}}while(width>1 or
+height>1)and#levels<8 do local newWidth,newHeight=math.max(1,width//2),math.max(
+1,height//2)local reduced=buffer.create(newWidth*newHeight*4)for y=0,newHeight-1
+do local y0=math.min(y*2,height-1)local y1=math.min(y*2+1,height-1)for x=0,
+newWidth-1 do local x0=math.min(x*2,width-1)local x1=math.min(x*2+1,width-1)
+local i00=(y0*width+x0)*4 local i10=(y0*width+x1)*4 local i01=(y1*width+x0)*4
+local i11=(y1*width+x1)*4 local target=(y*newWidth+x)*4 for channel=0,3 do local
+sum=buffer.readu8(pixels,i00+channel)+buffer.readu8(pixels,i10+channel)+buffer.
+readu8(pixels,i01+channel)+buffer.readu8(pixels,i11+channel)buffer.writeu8(
+reduced,target+channel,(sum+2)//4)end end end table.insert(levels,{pixels=
+reduced,width=newWidth,height=newHeight})pixels,width,height=reduced,newWidth,
+newHeight end return levels end local function loadImageAsync(assetUri:string,
+assetId:string)pcall(function()local fullImage=AssetService:
+CreateEditableImageAsync(Content.fromUri(assetUri))local downscaledSize=Vector2.
+new(math.max(1,math.floor(fullImage.Size.X*Utils.IMAGE_DOWNSCALE_FACTOR)),math.
+max(1,math.floor(fullImage.Size.Y*Utils.IMAGE_DOWNSCALE_FACTOR)))local
+downscaled=AssetService:CreateEditableImage({Size=downscaledSize})downscaled:
+DrawImageTransformed(Vector2.zero,downscaledSize/fullImage.Size,0,fullImage,{
+CombineType=Enum.ImageCombineType.Overwrite,PivotPoint=Vector2.zero})fullImage:
+Destroy()local pixels=downscaled:ReadPixelsBuffer(Vector2.zero,downscaledSize)
+downscaled:Destroy()Utils.IMAGE_CACHE[assetId]={pixels=pixels,width=
+downscaledSize.X,height=downscaledSize.Y,levels=buildMipLevels(pixels,
+downscaledSize.X,downscaledSize.Y)}end)loadingAssets[assetId]=nil end function
+Utils.getImage(source:string|Instance):(ImageRecord?,boolean?)local assetUri:
+string local sourceType=typeof(source)if sourceType=='string'then assetUri=
+source::string elseif sourceType=='Instance'then local sourceInstance=source::
+Instance if sourceInstance:IsA('ImageLabel')or sourceInstance:IsA('ImageButton')
+then local content=sourceInstance.ImageContent if content.SourceType==Enum.
+ContentSourceType.Object then local object=content.Object if object and object:
+IsA('EditableImage')then local size=object.Size return{editable=object,width=
+size.X,height=size.Y},false end return end assetUri=sourceInstance.Image elseif
+sourceInstance:IsA('Texture')or sourceInstance:IsA('Decal')then assetUri=
+sourceInstance.Texture elseif sourceInstance:IsA('SurfaceAppearance')then
+assetUri=sourceInstance.ColorMap end else return end if assetUri==nil or
+assetUri==''then return end local assetId:string?=string.match(assetUri,'%d+$')
+if assetId==nil then return end if Utils.IMAGE_CACHE[assetId]then return Utils.
+IMAGE_CACHE[assetId],true end if not loadingAssets[assetId]then loadingAssets[
+assetId]=true task.spawn(loadImageAsync,assetUri,assetId)end return end local 
+function bilinearAt(pixels:buffer,width:number,height:number,u:number,v:number):
+(number,number,number,number)local px=math.clamp(u*width-0.5,0,width-1)local py=
+math.clamp(v*height-0.5,0,height-1)local x0=px//1 local y0=py//1 local fx=px-x0
+local fy=py-y0 local x1=math.min(x0+1,width-1)local y1=math.min(y0+1,height-1)
+local w11=fx*fy local w10=fx-w11 local w01=fy-w11 local w00=1-fx-fy+w11 local
+i00=(y0*width+x0)*4 local i10=(y0*width+x1)*4 local i01=(y1*width+x0)*4 local
+i11=(y1*width+x1)*4 local r=buffer.readu8(pixels,i00)*w00+buffer.readu8(pixels,
+i10)*w10+buffer.readu8(pixels,i01)*w01+buffer.readu8(pixels,i11)*w11 local g=
+buffer.readu8(pixels,i00+1)*w00+buffer.readu8(pixels,i10+1)*w10+buffer.readu8(
+pixels,i01+1)*w01+buffer.readu8(pixels,i11+1)*w11 local b=buffer.readu8(pixels,
+i00+2)*w00+buffer.readu8(pixels,i10+2)*w10+buffer.readu8(pixels,i01+2)*w01+
+buffer.readu8(pixels,i11+2)*w11 local a=buffer.readu8(pixels,i00+3)*w00+buffer.
+readu8(pixels,i10+3)*w10+buffer.readu8(pixels,i01+3)*w01+buffer.readu8(pixels,
+i11+3)*w11 return r,g,b,a end function Utils.readPixelBilinear(image:ImageRecord
+,u:number,v:number):(number,number,number,number)local pixels=image.pixels if
+pixels then local r,g,b,a=bilinearAt(pixels,image.width,image.height,u,v)return
+r/255,g/255,b/255,a/255 end local width,height=image.width,image.height local px
+=math.clamp(u*width-0.5,0,width-1)local py=math.clamp(v*height-0.5,0,height-1)
+local x0=px//1 local y0=py//1 local x1=math.min(x0+1,width-1)local y1=math.min(
+y0+1,height-1)local blockW=x1-x0+1 local block=(image.editable::EditableImage):
+ReadPixelsBuffer(Vector2.new(x0,y0),Vector2.new(blockW,y1-y0+1))local fx=px-x0
+local fy=py-y0 local w11=fx*fy local w10=fx-w11 local w01=fy-w11 local w00=1-fx-
+fy+w11 local i10=(blockW-1)*4 local i01=(y1-y0)*blockW*4 local i11=i01+i10 local
+r=buffer.readu8(block,0)*w00+buffer.readu8(block,i10)*w10+buffer.readu8(block,
+i01)*w01+buffer.readu8(block,i11)*w11 local g=buffer.readu8(block,1)*w00+buffer.
+readu8(block,i10+1)*w10+buffer.readu8(block,i01+1)*w01+buffer.readu8(block,i11+1
+)*w11 local b=buffer.readu8(block,2)*w00+buffer.readu8(block,i10+2)*w10+buffer.
+readu8(block,i01+2)*w01+buffer.readu8(block,i11+2)*w11 local a=buffer.readu8(
+block,3)*w00+buffer.readu8(block,i10+3)*w10+buffer.readu8(block,i01+3)*w01+
+buffer.readu8(block,i11+3)*w11 return r/255,g/255,b/255,a/255 end function Utils
+.readPixelFiltered(image:ImageRecord,u:number,v:number,footprintTexels:number):(
+number,number,number,number)local levels=image.levels if not levels or
+footprintTexels<=1 then return Utils.readPixelBilinear(image,u,v)end local level
+=math.log(footprintTexels,2)local topIndex=#levels if level>=topIndex-1 then
+local top=levels[topIndex]local r,g,b,a=bilinearAt(top.pixels,top.width,top.
+height,u,v)return r/255,g/255,b/255,a/255 end local lowIndex=level//1 local
+fraction=level-lowIndex local low=levels[lowIndex+1]local high=levels[lowIndex+2
+]local lowR,lowG,lowB,lowA=bilinearAt(low.pixels,low.width,low.height,u,v)local
+highR,highG,highB,highA=bilinearAt(high.pixels,high.width,high.height,u,v)return
+(lowR+(highR-lowR)*fraction)/255,(lowG+(highG-lowG)*fraction)/255,(lowB+(highB-
+lowB)*fraction)/255,(lowA+(highA-lowA)*fraction)/255 end function Utils.
+getSkyboxFaceAndCoords(lookDirection:Vector3):(string,number,number)local absX=
+math.abs(lookDirection.X)local absY=math.abs(lookDirection.Y)local absZ=math.
+abs(lookDirection.Z)local face,u,v if absX>absY and absX>absZ then if
+lookDirection.X<0 then face='SkyboxRt'u=1-(lookDirection.Z/absX+1)/2 v=(
+lookDirection.Y/absX+1)/2 else face='SkyboxLf'u=(lookDirection.Z/absX+1)/2 v=(
+lookDirection.Y/absX+1)/2 end elseif absY>absZ then if lookDirection.Y>0 then
+face='SkyboxUp'u=1-(lookDirection.Z/absY+1)/2 v=(lookDirection.X/absY+1)/2 else
+face='SkyboxDn'u=1-(lookDirection.Z/absY+1)/2 v=1-(lookDirection.X/absY+1)/2 end
+else if lookDirection.Z<0 then face='SkyboxFt'u=(lookDirection.X/absZ+1)/2 v=(
+lookDirection.Y/absZ+1)/2 else face='SkyboxBk'u=1-(lookDirection.X/absZ+1)/2 v=(
+lookDirection.Y/absZ+1)/2 end end v=1-v return face,u,v end return Utils end)()
+local ClassHandlers=(function()local describeDefault=(function()local function 
+sample(record)return record.r,record.g,record.b,record.a end local function 
+describe(gui)local backgroundColor=gui.BackgroundColor3 local r,g,b,a=
+backgroundColor.R,backgroundColor.G,backgroundColor.B,1-gui.
+BackgroundTransparency local gradient=gui:FindFirstChildWhichIsA('UIGradient')if
+gradient then local colorKeypoint=gradient.Color.Keypoints[1]local alphaKeypoint
+=gradient.Transparency.Keypoints[1]r*=colorKeypoint.Value.R g*=colorKeypoint.
+Value.G b*=colorKeypoint.Value.B a*=1-alphaKeypoint.Value end return{sample=
+sample,r=r,g=g,b=b,a=a}end return describe end)()local describeImage=(function()
+local function sample(record,x,y,footprint)local r,g,b,a=record.r,record.g,
+record.b,record.a local image=record.image if not image then return r,g,b,a end
+local translatedX=x-record.posX local translatedY=y-record.posY local objectX=(
+record.cos*translatedX-record.sin*translatedY)*record.invSizeX local objectY=(
+record.sin*translatedX+record.cos*translatedY)*record.invSizeY local fitAxis=
+record.fitAxis if fitAxis=='y'then if objectY<record.fitMin or objectY>record.
+fitMax then return r,g,b,a end objectY=(objectY-record.fitMin)/record.fitRange
+elseif fitAxis=='x'then if objectX<record.fitMin or objectX>record.fitMax then
+return r,g,b,a end objectX=(objectX-record.fitMin)/record.fitRange end local
+rectScaleX,rectScaleY=record.rectScaleX,record.rectScaleY if rectScaleX~=0 or
+rectScaleY~=0 then objectX=math.clamp(objectX*rectScaleX+record.rectPosX,0,1)
+objectY=math.clamp(objectY*rectScaleY+record.rectPosY,0,1)end if objectX<0 or
+objectX>1 or objectY<0 or objectY>1 then return r,g,b,a end local imageR,imageG,
+imageB,imageA=Utils.readPixelFiltered(image,objectX,objectY,(footprint or 1)*
+record.texelScale)imageR*=record.multR imageG*=record.multG imageB*=record.multB
+imageA*=record.alphaMult return(1-imageA)*(r*a)+imageA*imageR,(1-imageA)*(g*a)+
+imageA*imageG,(1-imageA)*(b*a)+imageA*imageB,math.max(imageA,a)end local 
+function describe(gui)local record=describeDefault(gui)record.sample=sample
+record.image=nil local imageTransparency=gui.ImageTransparency if
+imageTransparency==1 then return record end if gui.ImageContent.SourceType~=Enum
+.ContentSourceType.Object and(gui.Image==''or gui.IsLoaded==false)then return
+record end local image,isDownscaled=Utils.getImage(gui)if not image then return
+record end record.image=image local absolutePosition,absoluteSize=gui.
+AbsolutePosition,gui.AbsoluteSize local rotation=math.rad(gui.Rotation)record.
+posX,record.posY=absolutePosition.X,absolutePosition.Y record.cos,record.sin=
+math.cos(-rotation),math.sin(-rotation)record.invSizeX,record.invSizeY=1/
+absoluteSize.X,1/absoluteSize.Y local imageWidth,imageHeight=image.width,image.
+height local objectWidth,objectHeight=absoluteSize.X,absoluteSize.Y record.
+fitAxis=nil if gui.ScaleType==Enum.ScaleType.Fit then if objectWidth<=
+objectHeight then local imageSizeInObject=objectWidth/imageWidth*imageHeight
+local minimumObjectSpace=((objectHeight-imageSizeInObject)/2)/objectHeight
+record.fitAxis='y'record.fitMin=minimumObjectSpace record.fitMax=1-
+minimumObjectSpace record.fitRange=record.fitMax-record.fitMin else local
+imageSizeInObject=objectHeight/imageHeight*imageWidth local minimumObjectSpace=(
+(objectWidth-imageSizeInObject)/2)/objectWidth record.fitAxis='x'record.fitMin=
 minimumObjectSpace record.fitMax=1-minimumObjectSpace record.fitRange=record.
-fitMax-record.fitMin else local imageSizeInObject=objectHeight/imageHeight*
-imageWidth local minimumObjectSpace=((objectWidth-imageSizeInObject)/2)/
-objectWidth record.fitAxis='x'record.fitMin=minimumObjectSpace record.fitMax=1-
-minimumObjectSpace record.fitRange=record.fitMax-record.fitMin end end local
-downScaleFactor=(if isDownscaled then Utils.IMAGE_DOWNSCALE_FACTOR else 1)local
-imageRectSize,imageRectOffset=gui.ImageRectSize,gui.ImageRectOffset record.
-rectScaleX=imageRectSize.X*downScaleFactor/imageWidth record.rectScaleY=
-imageRectSize.Y*downScaleFactor/imageHeight record.rectPosX=imageRectOffset.X*
-downScaleFactor/imageWidth record.rectPosY=imageRectOffset.Y*downScaleFactor/
-imageHeight local rectActive=record.rectScaleX~=0 or record.rectScaleY~=0 local
-uScale=(if record.fitAxis=='x'then 1/record.fitRange else 1)*(if rectActive then
-record.rectScaleX else 1)local vScale=(if record.fitAxis=='y'then 1/record.
-fitRange else 1)*(if rectActive then record.rectScaleY else 1)record.texelScale=
-math.max(uScale*imageWidth*record.invSizeX,vScale*imageHeight*record.invSizeY)
-local multColor=gui.ImageColor3 record.multR=multColor.R record.multG=multColor.
-G record.multB=multColor.B record.alphaMult=1-imageTransparency return record
-end return describe end)()local describeText=(function()local function sample(
-record,x,y)local r,g,b,a=record.r,record.g,record.b,record.a if not record.
-hasText then return r,g,b,a end local translatedX=x-record.posX local
-translatedY=y-record.posY local pixelsX=record.cos*translatedX-record.sin*
-translatedY local pixelsY=record.sin*translatedX+record.cos*translatedY local
-sizeX,sizeY=record.sizeX,record.sizeY local textBoundsX,textBoundsY=record.
-textBoundsX,record.textBoundsY local textXAlignment=record.textXAlignment if
-textXAlignment==Enum.TextXAlignment.Left then if pixelsX>textBoundsX then return
-r,g,b,a end elseif textXAlignment==Enum.TextXAlignment.Right then if pixelsX<
-sizeX-textBoundsX then return r,g,b,a end elseif textXAlignment==Enum.
-TextXAlignment.Center then local mid=sizeX/2 local textOffset=textBoundsX/2 if
-pixelsX<mid-textOffset then return r,g,b,a elseif pixelsX>mid+textOffset then
-return r,g,b,a end end local textYAlignment=record.textYAlignment if
-textYAlignment==Enum.TextYAlignment.Top then if pixelsY>textBoundsY then return
-r,g,b,a end elseif textYAlignment==Enum.TextYAlignment.Bottom then if pixelsY<
-sizeY-textBoundsY then return r,g,b,a end elseif textYAlignment==Enum.
-TextYAlignment.Center then local mid=sizeY/2 local textOffset=textBoundsY/2 if
-pixelsY<mid-textOffset then return r,g,b,a elseif pixelsY>mid+textOffset then
-return r,g,b,a end end local lineStride=record.lineStride local textHeight=
-record.textHeight if textYAlignment==Enum.TextYAlignment.Top then if(pixelsY%
-lineStride)>textHeight then return r,g,b,a end elseif textYAlignment==Enum.
-TextYAlignment.Bottom then local padding=sizeY-textBoundsY if((pixelsY+padding)%
-lineStride)>textHeight then return r,g,b,a end elseif textYAlignment==Enum.
-TextYAlignment.Center then local padding=(sizeY-textBoundsY)/2 if((pixelsY+
-padding)%lineStride)>textHeight then return r,g,b,a end end if a>0 then return(
-0.6*record.textR)+(0.4*r),(0.6*record.textG)+(0.4*g),(0.6*record.textB)+(0.4*b),
-record.textAlpha else return record.textR,record.textG,record.textB,record.
-textAlpha*0.6 end end local function describe(gui)local record=describeDefault(
-gui)record.sample=sample local textAlpha=1-gui.TextTransparency record.hasText=
-textAlpha~=0 and string.find(gui.Text,'%S')~=nil if not record.hasText then
-return record end local absolutePosition,absoluteSize=gui.AbsolutePosition,gui.
-AbsoluteSize local rotation=math.rad(gui.Rotation)record.posX,record.posY=
-absolutePosition.X,absolutePosition.Y record.cos,record.sin=math.cos(-rotation),
-math.sin(-rotation)record.sizeX,record.sizeY=absoluteSize.X,absoluteSize.Y local
-textBounds=gui.TextBounds record.textBoundsX,record.textBoundsY=textBounds.X,
-textBounds.Y record.textXAlignment=gui.TextXAlignment record.textYAlignment=gui.
-TextYAlignment local textHeight=gui.TextSize local lineCount=textBounds.Y//
-textHeight local lineSpacing=(textBounds.Y-(textHeight*lineCount))/(lineCount-1)
-record.textHeight=textHeight record.lineStride=textHeight+lineSpacing local
-textColor=gui.TextColor3 record.textR,record.textG,record.textB=textColor.R,
-textColor.G,textColor.B record.textAlpha=textAlpha return record end return
-describe end)()return setmetatable({default=describeDefault,ImageLabel=
-describeImage,ImageButton=describeImage,TextLabel=describeText,TextButton=
-describeText,TextBox=describeText},{__index=function(t,_class)return rawget(t,
-'default')end})end)()local GetGuiSampler=(function()local RunService=game:
-GetService('RunService')local layerCache=setmetatable({},{__mode='k'})local
-frameNumber=0 RunService.PostSimulation:Connect(function()frameNumber+=1 end)
-return function(gui)local record=layerCache[gui]if record and record.describedAt
-==frameNumber then return record end record=ClassHandlers[gui.ClassName](gui)
-record.describedAt=frameNumber layerCache[gui]=record return record end end)()
-local GetWorldColor=(function()local Terrain=workspace.Terrain local Lighting=
-game:GetService('Lighting')local currentSkybox=Lighting:FindFirstChildWhichIsA(
-'Sky')Lighting.ChildAdded:Connect(function(child)if child:IsA('Sky')then
-currentSkybox=child end end)Lighting.ChildRemoved:Connect(function(child)if
-child==currentSkybox then currentSkybox=Lighting:FindFirstChildWhichIsA('Sky')
-end end)local nightColor,dayColor=Color3.fromRGB(2,7,30),Color3.fromRGB(89,178,
-210)local function estimateDefaultSky(origin:Vector3):(number,number,number,
-number)local clockTime=Lighting.ClockTime local distFromNoon=math.abs(12-
-clockTime)/12 local noise=math.noise(origin.X*70,origin.Y*70,origin.Z*70)/10
-local color=dayColor:Lerp(nightColor,distFromNoon+noise)return color.R,color.G,
-color.B,1 end local function getSkyboxColor(origin:Vector3,direction:Vector3,
-footprint:number):(number,number,number,number)if not currentSkybox then return
-estimateDefaultSky(origin)end local skyboxFace,u,v=Utils.getSkyboxFaceAndCoords(
-direction.Unit)local skyboxTexture=currentSkybox[skyboxFace]local skyboxImage=
-Utils.getImage(skyboxTexture)if not skyboxImage then return estimateDefaultSky(
-origin)end local footprintTexels=footprint*skyboxImage.height/workspace.
-CurrentCamera.ViewportSize.Y return Utils.readPixelFiltered(skyboxImage,u,v,
-footprintTexels)end local raycastParams=RaycastParams.new()raycastParams.
-FilterType=Enum.RaycastFilterType.Exclude raycastParams.IgnoreWater=false local
-ignoreList:{Instance}={}local function raycastUntilColor(origin:Vector3,
-direction:Vector3,length:number,footprint:number):(number,number,number,number)
-if#ignoreList>0 then table.clear(ignoreList)raycastParams.
-FilterDescendantsInstances=ignoreList end while true do local raycastResult=
-workspace:Raycast(origin,direction*length,raycastParams)if not raycastResult or
-not raycastResult.Instance then return getSkyboxColor(origin,direction,footprint
-)end local hit=raycastResult.Instance local fogBlend=if raycastResult.Distance>=
-Lighting.FogStart then(raycastResult.Distance-Lighting.FogStart)/(Lighting.
-FogEnd-Lighting.FogStart)*0.9 else 0 if hit==Terrain then if raycastResult.
-Material==Enum.Material.Water then local color=Terrain.WaterColor:Lerp(Lighting.
-FogColor,fogBlend)return color.R,color.G,color.B,1-Terrain.WaterTransparency
-else local color=Terrain:GetMaterialColor(raycastResult.Material):Lerp(Lighting.
-FogColor,fogBlend)return color.R,color.G,color.B,1 end end if(1-hit.Transparency
-)*(1-hit.LocalTransparencyModifier)<=0.05 then table.insert(ignoreList,hit)
-raycastParams.FilterDescendantsInstances=ignoreList origin=raycastResult.
-Position length-=raycastResult.Distance else local color=hit.Color:Lerp(Lighting
-.FogColor,fogBlend)return color.R,color.G,color.B,1-hit.Transparency end end end
-return function(x:number,y:number,footprint:number?):(number,number,number,
-number)local ray=workspace.CurrentCamera:ScreenPointToRay(x,y,0)return
-raycastUntilColor(ray.Origin,ray.Direction,500,footprint or 1)end end)()local
-PlayerGui=game:GetService('Players').LocalPlayer:WaitForChild('PlayerGui',math.
-huge)local PixelColorApproximation={}function PixelColorApproximation:GetColorXY
-(x:number,y:number,topLayer:GuiObject?,footprint:number?):(number,number,number,
-number)local guisAtPosition=PlayerGui:GetGuiObjectsAtPosition(x,y)local r,g,b=0,
-0,0 local transmittance=1 local topLayerIndex=if topLayer then table.find(
-guisAtPosition,topLayer)else nil for i=(topLayerIndex or 0)+1,#guisAtPosition do
-local sampler=GetGuiSampler(guisAtPosition[i])local guiR,guiG,guiB,guiA=sampler:
-sample(x,y,footprint)if guiA<=0 then continue end local weight=transmittance*
-guiA r+=weight*guiR g+=weight*guiG b+=weight*guiB transmittance*=1-guiA if
-transmittance<=0 then break end end if transmittance>0 then local worldR,worldG,
-worldB,worldA=GetWorldColor(x,y,footprint)local weight=transmittance*worldA r+=
-weight*worldR g+=weight*worldG b+=weight*worldB end return r,g,b,1 end function
-PixelColorApproximation:GetColor(queryPoint:Vector2,topLayer:GuiObject?,
-footprint:number?):{number}local r,g,b,a=self:GetColorXY(queryPoint.X,queryPoint
-.Y,topLayer,footprint)return{r,g,b,a}end return PixelColorApproximation end)()
-local EditableImageBlur=(function()local Kernel=(function()local Kernel={}local
-readu8=buffer.readu8 local writeu8=buffer.writeu8 local readu32=buffer.readu32
-local writeu32=buffer.writeu32 local band=bit32.band local rshift=bit32.rshift
-local SWAR_MAX_RADIUS=128 local LANE_MASK=0xff00ff local BOX_RADII_CACHE_LIMIT=
-512 local boxRadiiCache:{[number]:{number}}={}local boxRadiiCacheCount=0
-function Kernel.boxRadiiForSigma(sigma:number):{number}local cached=
-boxRadiiCache[sigma]if cached then return cached end local idealFilterWidth=math
-.sqrt((12*sigma*sigma/3)+1)local lowerWidth=math.floor(idealFilterWidth)if
-lowerWidth%2==0 then lowerWidth-=1 end local upperWidth=(lowerWidth+1)/2 local
-boxRadii={(lowerWidth-1)/2,upperWidth,upperWidth}if boxRadiiCacheCount>=
-BOX_RADII_CACHE_LIMIT then table.clear(boxRadiiCache)boxRadiiCacheCount=0 end
-boxRadiiCache[sigma]=boxRadii boxRadiiCacheCount+=1 return boxRadii end function
-Kernel.supportForSigma(sigma:number):number local boxRadii=Kernel.
-boxRadiiForSigma(sigma)return boxRadii[1]+boxRadii[2]+boxRadii[3]end local
-normalizationLutCache:{[number]:buffer}={}local function getNormalizationLut(
-blurRadius:number):buffer local cached=normalizationLutCache[blurRadius]if
-cached then return cached end local inverseArea=1/(blurRadius+blurRadius+1)local
-size=255*(blurRadius+blurRadius+1)+1 local lut=buffer.create(size)for i=0,size-1
-do writeu8(lut,i,i*inverseArea+0.5)end normalizationLutCache[blurRadius]=lut
-return lut end local function horizontalAverage(source:buffer,target:buffer,
-imageWidth:number,imageHeight:number)local widthTimesFour=imageWidth*4 for row=0
-,imageHeight-1 do local rowStart=row*widthTimesFour local sumR,sumG,sumB,sumA=0,
-0,0,0 for index=rowStart,rowStart+widthTimesFour-4,4 do local value=readu32(
-source,index)sumR+=band(value,255)sumG+=band(rshift(value,8),255)sumB+=band(
-rshift(value,16),255)sumA+=rshift(value,24)end local average=(sumR/imageWidth+
-0.5)//1+((sumG/imageWidth+0.5)//1)*256+((sumB/imageWidth+0.5)//1)*65536+((sumA/
-imageWidth+0.5)//1)*16777216 for index=rowStart,rowStart+widthTimesFour-4,4 do
-writeu32(target,index,average)end end end local function verticalAverage(source:
-buffer,target:buffer,imageWidth:number,imageHeight:number)local widthTimesFour=
-imageWidth*4 local columnSpan=(imageHeight-1)*widthTimesFour for column=0,
-imageWidth-1 do local columnStart=column*4 local sumR,sumG,sumB,sumA=0,0,0,0 for
-index=columnStart,columnStart+columnSpan,widthTimesFour do local value=readu32(
-source,index)sumR+=band(value,255)sumG+=band(rshift(value,8),255)sumB+=band(
-rshift(value,16),255)sumA+=rshift(value,24)end local average=(sumR/imageHeight+
-0.5)//1+((sumG/imageHeight+0.5)//1)*256+((sumB/imageHeight+0.5)//1)*65536+((sumA
-/imageHeight+0.5)//1)*16777216 for index=columnStart,columnStart+columnSpan,
-widthTimesFour do writeu32(target,index,average)end end end local function 
-horizontalPass(source:buffer,target:buffer,imageWidth:number,imageHeight:number,
-blurRadius:number,lut:buffer)local widthTimesFour=imageWidth*4 local middleCount
-=imageWidth-blurRadius-blurRadius-1 local unrolled=middleCount//4 local
-remainder=middleCount%4 for row=0,imageHeight-1 do local rowStart=row*
-widthTimesFour local firstValue=readu32(source,rowStart)local firstRB=band(
-firstValue,LANE_MASK)local firstGA=band(rshift(firstValue,8),LANE_MASK)local
-lastValue=readu32(source,rowStart+(imageWidth-1)*4)local lastRB=band(lastValue,
-LANE_MASK)local lastGA=band(rshift(lastValue,8),LANE_MASK)local accumulatorRB=
-firstRB*(blurRadius+1)local accumulatorGA=firstGA*(blurRadius+1)for i=0,
-blurRadius-1 do local value=readu32(source,rowStart+i*4)accumulatorRB+=band(
-value,LANE_MASK)accumulatorGA+=band(rshift(value,8),LANE_MASK)end local
-enterIndex=rowStart+blurRadius*4 local leaveIndex=rowStart local targetIndex=
-rowStart for _=0,blurRadius do local value=readu32(source,enterIndex)
-accumulatorRB+=band(value,LANE_MASK)-firstRB accumulatorGA+=band(rshift(value,8)
-,LANE_MASK)-firstGA writeu32(target,targetIndex,readu8(lut,band(accumulatorRB,
-0xffff))+readu8(lut,band(accumulatorGA,0xffff))*256+readu8(lut,rshift(
-accumulatorRB,16))*65536+readu8(lut,rshift(accumulatorGA,16))*16777216)
-enterIndex+=4 targetIndex+=4 end for _=1,unrolled do local enter1=readu32(source
-,enterIndex)local enter2=readu32(source,enterIndex+4)local enter3=readu32(source
-,enterIndex+8)local enter4=readu32(source,enterIndex+12)local leave1=readu32(
-source,leaveIndex)local leave2=readu32(source,leaveIndex+4)local leave3=readu32(
-source,leaveIndex+8)local leave4=readu32(source,leaveIndex+12)accumulatorRB+=
-band(enter1,LANE_MASK)-band(leave1,LANE_MASK)accumulatorGA+=band(rshift(enter1,8
-),LANE_MASK)-band(rshift(leave1,8),LANE_MASK)writeu32(target,targetIndex,readu8(
-lut,band(accumulatorRB,0xffff))+readu8(lut,band(accumulatorGA,0xffff))*256+
-readu8(lut,rshift(accumulatorRB,16))*65536+readu8(lut,rshift(accumulatorGA,16))*
-16777216)accumulatorRB+=band(enter2,LANE_MASK)-band(leave2,LANE_MASK)
-accumulatorGA+=band(rshift(enter2,8),LANE_MASK)-band(rshift(leave2,8),LANE_MASK)
-writeu32(target,targetIndex+4,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,
+fitMax-record.fitMin end end local downScaleFactor=(if isDownscaled then Utils.
+IMAGE_DOWNSCALE_FACTOR else 1)local imageRectSize,imageRectOffset=gui.
+ImageRectSize,gui.ImageRectOffset record.rectScaleX=imageRectSize.X*
+downScaleFactor/imageWidth record.rectScaleY=imageRectSize.Y*downScaleFactor/
+imageHeight record.rectPosX=imageRectOffset.X*downScaleFactor/imageWidth record.
+rectPosY=imageRectOffset.Y*downScaleFactor/imageHeight local rectActive=record.
+rectScaleX~=0 or record.rectScaleY~=0 local uScale=(if record.fitAxis=='x'then 1
+/record.fitRange else 1)*(if rectActive then record.rectScaleX else 1)local
+vScale=(if record.fitAxis=='y'then 1/record.fitRange else 1)*(if rectActive then
+record.rectScaleY else 1)record.texelScale=math.max(uScale*imageWidth*record.
+invSizeX,vScale*imageHeight*record.invSizeY)local multColor=gui.ImageColor3
+record.multR=multColor.R record.multG=multColor.G record.multB=multColor.B
+record.alphaMult=1-imageTransparency return record end return describe end)()
+local describeText=(function()local function sample(record,x,y)local r,g,b,a=
+record.r,record.g,record.b,record.a if not record.hasText then return r,g,b,a
+end local translatedX=x-record.posX local translatedY=y-record.posY local
+pixelsX=record.cos*translatedX-record.sin*translatedY local pixelsY=record.sin*
+translatedX+record.cos*translatedY local sizeX,sizeY=record.sizeX,record.sizeY
+local textBoundsX,textBoundsY=record.textBoundsX,record.textBoundsY local
+textXAlignment=record.textXAlignment if textXAlignment==Enum.TextXAlignment.Left
+then if pixelsX>textBoundsX then return r,g,b,a end elseif textXAlignment==Enum.
+TextXAlignment.Right then if pixelsX<sizeX-textBoundsX then return r,g,b,a end
+elseif textXAlignment==Enum.TextXAlignment.Center then local mid=sizeX/2 local
+textOffset=textBoundsX/2 if pixelsX<mid-textOffset then return r,g,b,a elseif
+pixelsX>mid+textOffset then return r,g,b,a end end local textYAlignment=record.
+textYAlignment if textYAlignment==Enum.TextYAlignment.Top then if pixelsY>
+textBoundsY then return r,g,b,a end elseif textYAlignment==Enum.TextYAlignment.
+Bottom then if pixelsY<sizeY-textBoundsY then return r,g,b,a end elseif
+textYAlignment==Enum.TextYAlignment.Center then local mid=sizeY/2 local
+textOffset=textBoundsY/2 if pixelsY<mid-textOffset then return r,g,b,a elseif
+pixelsY>mid+textOffset then return r,g,b,a end end local lineStride=record.
+lineStride local textHeight=record.textHeight if textYAlignment==Enum.
+TextYAlignment.Top then if(pixelsY%lineStride)>textHeight then return r,g,b,a
+end elseif textYAlignment==Enum.TextYAlignment.Bottom then local padding=sizeY-
+textBoundsY if((pixelsY+padding)%lineStride)>textHeight then return r,g,b,a end
+elseif textYAlignment==Enum.TextYAlignment.Center then local padding=(sizeY-
+textBoundsY)/2 if((pixelsY+padding)%lineStride)>textHeight then return r,g,b,a
+end end if a>0 then return(0.6*record.textR)+(0.4*r),(0.6*record.textG)+(0.4*g),
+(0.6*record.textB)+(0.4*b),record.textAlpha else return record.textR,record.
+textG,record.textB,record.textAlpha*0.6 end end local function describe(gui)
+local record=describeDefault(gui)record.sample=sample local textAlpha=1-gui.
+TextTransparency record.hasText=textAlpha~=0 and string.find(gui.Text,'%S')~=nil
+if not record.hasText then return record end local absolutePosition,absoluteSize
+=gui.AbsolutePosition,gui.AbsoluteSize local rotation=math.rad(gui.Rotation)
+record.posX,record.posY=absolutePosition.X,absolutePosition.Y record.cos,record.
+sin=math.cos(-rotation),math.sin(-rotation)record.sizeX,record.sizeY=
+absoluteSize.X,absoluteSize.Y local textBounds=gui.TextBounds record.textBoundsX
+,record.textBoundsY=textBounds.X,textBounds.Y record.textXAlignment=gui.
+TextXAlignment record.textYAlignment=gui.TextYAlignment local textHeight=gui.
+TextSize local lineCount=textBounds.Y//textHeight local lineSpacing=(textBounds.
+Y-(textHeight*lineCount))/(lineCount-1)record.textHeight=textHeight record.
+lineStride=textHeight+lineSpacing local textColor=gui.TextColor3 record.textR,
+record.textG,record.textB=textColor.R,textColor.G,textColor.B record.textAlpha=
+textAlpha return record end return describe end)()return setmetatable({default=
+describeDefault,ImageLabel=describeImage,ImageButton=describeImage,TextLabel=
+describeText,TextButton=describeText,TextBox=describeText},{__index=function(t,
+_class)return rawget(t,'default')end})end)()local GetGuiSampler=(function()local
+RunService=game:GetService('RunService')local layerCache=setmetatable({},{__mode
+='k'})local frameNumber=0 RunService.PostSimulation:Connect(function()
+frameNumber+=1 end)return function(gui)local record=layerCache[gui]if record and
+record.describedAt==frameNumber then return record end record=ClassHandlers[gui.
+ClassName](gui)record.describedAt=frameNumber layerCache[gui]=record return
+record end end)()local GetWorldColor=(function()local Terrain=workspace.Terrain
+local Lighting=game:GetService('Lighting')local currentSkybox=Lighting:
+FindFirstChildWhichIsA('Sky')Lighting.ChildAdded:Connect(function(child)if child
+:IsA('Sky')then currentSkybox=child end end)Lighting.ChildRemoved:Connect(
+function(child)if child==currentSkybox then currentSkybox=Lighting:
+FindFirstChildWhichIsA('Sky')end end)local nightColor,dayColor=Color3.fromRGB(2,
+7,30),Color3.fromRGB(89,178,210)local function estimateDefaultSky(origin:Vector3
+):(number,number,number,number)local clockTime=Lighting.ClockTime local
+distFromNoon=math.abs(12-clockTime)/12 local noise=math.noise(origin.X*70,origin
+.Y*70,origin.Z*70)/10 local color=dayColor:Lerp(nightColor,distFromNoon+noise)
+return color.R,color.G,color.B,1 end local function getSkyboxColor(origin:
+Vector3,direction:Vector3,footprint:number):(number,number,number,number)if not
+currentSkybox then return estimateDefaultSky(origin)end local skyboxFace,u,v=
+Utils.getSkyboxFaceAndCoords(direction.Unit)local skyboxTexture=currentSkybox[
+skyboxFace]local skyboxImage=Utils.getImage(skyboxTexture)if not skyboxImage
+then return estimateDefaultSky(origin)end local footprintTexels=footprint*
+skyboxImage.height/workspace.CurrentCamera.ViewportSize.Y return Utils.
+readPixelFiltered(skyboxImage,u,v,footprintTexels)end local raycastParams=
+RaycastParams.new()raycastParams.FilterType=Enum.RaycastFilterType.Exclude
+raycastParams.IgnoreWater=false local ignoreList:{Instance}={}local function 
+raycastUntilColor(origin:Vector3,direction:Vector3,length:number,footprint:
+number):(number,number,number,number)if#ignoreList>0 then table.clear(ignoreList
+)raycastParams.FilterDescendantsInstances=ignoreList end while true do local
+raycastResult=workspace:Raycast(origin,direction*length,raycastParams)if not
+raycastResult or not raycastResult.Instance then return getSkyboxColor(origin,
+direction,footprint)end local hit=raycastResult.Instance local fogBlend=if
+raycastResult.Distance>=Lighting.FogStart then(raycastResult.Distance-Lighting.
+FogStart)/(Lighting.FogEnd-Lighting.FogStart)*0.9 else 0 if hit==Terrain then if
+raycastResult.Material==Enum.Material.Water then local color=Terrain.WaterColor:
+Lerp(Lighting.FogColor,fogBlend)return color.R,color.G,color.B,1-Terrain.
+WaterTransparency else local color=Terrain:GetMaterialColor(raycastResult.
+Material):Lerp(Lighting.FogColor,fogBlend)return color.R,color.G,color.B,1 end
+end if(1-hit.Transparency)*(1-hit.LocalTransparencyModifier)<=0.05 then table.
+insert(ignoreList,hit)raycastParams.FilterDescendantsInstances=ignoreList origin
+=raycastResult.Position length-=raycastResult.Distance else local color=hit.
+Color:Lerp(Lighting.FogColor,fogBlend)return color.R,color.G,color.B,1-hit.
+Transparency end end end return function(x:number,y:number,footprint:number?):(
+number,number,number,number)local ray=workspace.CurrentCamera:ScreenPointToRay(x
+,y,0)return raycastUntilColor(ray.Origin,ray.Direction,500,footprint or 1)end
+end)()local PlayerGui=game:GetService('Players').LocalPlayer:WaitForChild(
+'PlayerGui',math.huge)local PixelColorApproximation={}function
+PixelColorApproximation:GetColorXY(x:number,y:number,topLayer:GuiObject?,
+footprint:number?):(number,number,number,number)local guisAtPosition=PlayerGui:
+GetGuiObjectsAtPosition(x,y)local r,g,b=0,0,0 local transmittance=1 local
+topLayerIndex=if topLayer then table.find(guisAtPosition,topLayer)else nil for i
+=(topLayerIndex or 0)+1,#guisAtPosition do local sampler=GetGuiSampler(
+guisAtPosition[i])local guiR,guiG,guiB,guiA=sampler:sample(x,y,footprint)if guiA
+<=0 then continue end local weight=transmittance*guiA r+=weight*guiR g+=weight*
+guiG b+=weight*guiB transmittance*=1-guiA if transmittance<=0 then break end end
+if transmittance>0 then local worldR,worldG,worldB,worldA=GetWorldColor(x,y,
+footprint)local weight=transmittance*worldA r+=weight*worldR g+=weight*worldG b
++=weight*worldB end return r,g,b,1 end function PixelColorApproximation:GetColor
+(queryPoint:Vector2,topLayer:GuiObject?,footprint:number?):{number}local r,g,b,a
+=self:GetColorXY(queryPoint.X,queryPoint.Y,topLayer,footprint)return{r,g,b,a}end
+return PixelColorApproximation end)()local EditableImageBlur=(function()local
+Kernel=(function()local Kernel={}local readu8=buffer.readu8 local writeu8=buffer
+.writeu8 local readu32=buffer.readu32 local writeu32=buffer.writeu32 local band=
+bit32.band local rshift=bit32.rshift local SWAR_MAX_RADIUS=128 local LANE_MASK=
+0xff00ff local BOX_RADII_CACHE_LIMIT=512 local boxRadiiCache:{[number]:{number}}
+={}local boxRadiiCacheCount=0 function Kernel.boxRadiiForSigma(sigma:number):{
+number}local cached=boxRadiiCache[sigma]if cached then return cached end local
+idealFilterWidth=math.sqrt((12*sigma*sigma/3)+1)local lowerWidth=math.floor(
+idealFilterWidth)if lowerWidth%2==0 then lowerWidth-=1 end local upperWidth=(
+lowerWidth+1)/2 local boxRadii={(lowerWidth-1)/2,upperWidth,upperWidth}if
+boxRadiiCacheCount>=BOX_RADII_CACHE_LIMIT then table.clear(boxRadiiCache)
+boxRadiiCacheCount=0 end boxRadiiCache[sigma]=boxRadii boxRadiiCacheCount+=1
+return boxRadii end function Kernel.supportForSigma(sigma:number):number local
+boxRadii=Kernel.boxRadiiForSigma(sigma)return boxRadii[1]+boxRadii[2]+boxRadii[3
+]end local normalizationLutCache:{[number]:buffer}={}local function 
+getNormalizationLut(blurRadius:number):buffer local cached=normalizationLutCache
+[blurRadius]if cached then return cached end local inverseArea=1/(blurRadius+
+blurRadius+1)local size=255*(blurRadius+blurRadius+1)+1 local lut=buffer.create(
+size)for i=0,size-1 do writeu8(lut,i,i*inverseArea+0.5)end normalizationLutCache
+[blurRadius]=lut return lut end local function horizontalAverage(source:buffer,
+target:buffer,imageWidth:number,imageHeight:number)local widthTimesFour=
+imageWidth*4 for row=0,imageHeight-1 do local rowStart=row*widthTimesFour local
+sumR,sumG,sumB,sumA=0,0,0,0 for index=rowStart,rowStart+widthTimesFour-4,4 do
+local value=readu32(source,index)sumR+=band(value,255)sumG+=band(rshift(value,8)
+,255)sumB+=band(rshift(value,16),255)sumA+=rshift(value,24)end local average=(
+sumR/imageWidth+0.5)//1+((sumG/imageWidth+0.5)//1)*256+((sumB/imageWidth+0.5)//1
+)*65536+((sumA/imageWidth+0.5)//1)*16777216 for index=rowStart,rowStart+
+widthTimesFour-4,4 do writeu32(target,index,average)end end end local function 
+verticalAverage(source:buffer,target:buffer,imageWidth:number,imageHeight:number
+)local widthTimesFour=imageWidth*4 local columnSpan=(imageHeight-1)*
+widthTimesFour for column=0,imageWidth-1 do local columnStart=column*4 local
+sumR,sumG,sumB,sumA=0,0,0,0 for index=columnStart,columnStart+columnSpan,
+widthTimesFour do local value=readu32(source,index)sumR+=band(value,255)sumG+=
+band(rshift(value,8),255)sumB+=band(rshift(value,16),255)sumA+=rshift(value,24)
+end local average=(sumR/imageHeight+0.5)//1+((sumG/imageHeight+0.5)//1)*256+((
+sumB/imageHeight+0.5)//1)*65536+((sumA/imageHeight+0.5)//1)*16777216 for index=
+columnStart,columnStart+columnSpan,widthTimesFour do writeu32(target,index,
+average)end end end local function horizontalPass(source:buffer,target:buffer,
+imageWidth:number,imageHeight:number,blurRadius:number,lut:buffer)local
+widthTimesFour=imageWidth*4 local middleCount=imageWidth-blurRadius-blurRadius-1
+local unrolled=middleCount//4 local remainder=middleCount%4 for row=0,
+imageHeight-1 do local rowStart=row*widthTimesFour local firstValue=readu32(
+source,rowStart)local firstRB=band(firstValue,LANE_MASK)local firstGA=band(
+rshift(firstValue,8),LANE_MASK)local lastValue=readu32(source,rowStart+(
+imageWidth-1)*4)local lastRB=band(lastValue,LANE_MASK)local lastGA=band(rshift(
+lastValue,8),LANE_MASK)local accumulatorRB=firstRB*(blurRadius+1)local
+accumulatorGA=firstGA*(blurRadius+1)for i=0,blurRadius-1 do local value=readu32(
+source,rowStart+i*4)accumulatorRB+=band(value,LANE_MASK)accumulatorGA+=band(
+rshift(value,8),LANE_MASK)end local enterIndex=rowStart+blurRadius*4 local
+leaveIndex=rowStart local targetIndex=rowStart for _=0,blurRadius do local value
+=readu32(source,enterIndex)accumulatorRB+=band(value,LANE_MASK)-firstRB
+accumulatorGA+=band(rshift(value,8),LANE_MASK)-firstGA writeu32(target,
+targetIndex,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,band(accumulatorGA
+,0xffff))*256+readu8(lut,rshift(accumulatorRB,16))*65536+readu8(lut,rshift(
+accumulatorGA,16))*16777216)enterIndex+=4 targetIndex+=4 end for _=1,unrolled do
+local enter1=readu32(source,enterIndex)local enter2=readu32(source,enterIndex+4)
+local enter3=readu32(source,enterIndex+8)local enter4=readu32(source,enterIndex+
+12)local leave1=readu32(source,leaveIndex)local leave2=readu32(source,leaveIndex
++4)local leave3=readu32(source,leaveIndex+8)local leave4=readu32(source,
+leaveIndex+12)accumulatorRB+=band(enter1,LANE_MASK)-band(leave1,LANE_MASK)
+accumulatorGA+=band(rshift(enter1,8),LANE_MASK)-band(rshift(leave1,8),LANE_MASK)
+writeu32(target,targetIndex,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,
 band(accumulatorGA,0xffff))*256+readu8(lut,rshift(accumulatorRB,16))*65536+
-readu8(lut,rshift(accumulatorGA,16))*16777216)accumulatorRB+=band(enter3,
-LANE_MASK)-band(leave3,LANE_MASK)accumulatorGA+=band(rshift(enter3,8),LANE_MASK)
--band(rshift(leave3,8),LANE_MASK)writeu32(target,targetIndex+8,readu8(lut,band(
+readu8(lut,rshift(accumulatorGA,16))*16777216)accumulatorRB+=band(enter2,
+LANE_MASK)-band(leave2,LANE_MASK)accumulatorGA+=band(rshift(enter2,8),LANE_MASK)
+-band(rshift(leave2,8),LANE_MASK)writeu32(target,targetIndex+4,readu8(lut,band(
 accumulatorRB,0xffff))+readu8(lut,band(accumulatorGA,0xffff))*256+readu8(lut,
 rshift(accumulatorRB,16))*65536+readu8(lut,rshift(accumulatorGA,16))*16777216)
-accumulatorRB+=band(enter4,LANE_MASK)-band(leave4,LANE_MASK)accumulatorGA+=band(
-rshift(enter4,8),LANE_MASK)-band(rshift(leave4,8),LANE_MASK)writeu32(target,
-targetIndex+12,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,band(
+accumulatorRB+=band(enter3,LANE_MASK)-band(leave3,LANE_MASK)accumulatorGA+=band(
+rshift(enter3,8),LANE_MASK)-band(rshift(leave3,8),LANE_MASK)writeu32(target,
+targetIndex+8,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,band(
 accumulatorGA,0xffff))*256+readu8(lut,rshift(accumulatorRB,16))*65536+readu8(lut
-,rshift(accumulatorGA,16))*16777216)enterIndex+=16 leaveIndex+=16 targetIndex+=
-16 end for _=1,remainder do local enterValue=readu32(source,enterIndex)local
-leaveValue=readu32(source,leaveIndex)accumulatorRB+=band(enterValue,LANE_MASK)-
-band(leaveValue,LANE_MASK)accumulatorGA+=band(rshift(enterValue,8),LANE_MASK)-
-band(rshift(leaveValue,8),LANE_MASK)writeu32(target,targetIndex,readu8(lut,band(
-accumulatorRB,0xffff))+readu8(lut,band(accumulatorGA,0xffff))*256+readu8(lut,
-rshift(accumulatorRB,16))*65536+readu8(lut,rshift(accumulatorGA,16))*16777216)
-enterIndex+=4 leaveIndex+=4 targetIndex+=4 end for _=imageWidth-blurRadius,
-imageWidth-1 do local leaveValue=readu32(source,leaveIndex)accumulatorRB+=lastRB
--band(leaveValue,LANE_MASK)accumulatorGA+=lastGA-band(rshift(leaveValue,8),
+,rshift(accumulatorGA,16))*16777216)accumulatorRB+=band(enter4,LANE_MASK)-band(
+leave4,LANE_MASK)accumulatorGA+=band(rshift(enter4,8),LANE_MASK)-band(rshift(
+leave4,8),LANE_MASK)writeu32(target,targetIndex+12,readu8(lut,band(accumulatorRB
+,0xffff))+readu8(lut,band(accumulatorGA,0xffff))*256+readu8(lut,rshift(
+accumulatorRB,16))*65536+readu8(lut,rshift(accumulatorGA,16))*16777216)
+enterIndex+=16 leaveIndex+=16 targetIndex+=16 end for _=1,remainder do local
+enterValue=readu32(source,enterIndex)local leaveValue=readu32(source,leaveIndex)
+accumulatorRB+=band(enterValue,LANE_MASK)-band(leaveValue,LANE_MASK)
+accumulatorGA+=band(rshift(enterValue,8),LANE_MASK)-band(rshift(leaveValue,8),
 LANE_MASK)writeu32(target,targetIndex,readu8(lut,band(accumulatorRB,0xffff))+
 readu8(lut,band(accumulatorGA,0xffff))*256+readu8(lut,rshift(accumulatorRB,16))*
-65536+readu8(lut,rshift(accumulatorGA,16))*16777216)leaveIndex+=4 targetIndex+=4
-end end end local function verticalPassColumn(source:buffer,target:buffer,
-columnStart:number,imageHeight:number,widthTimesFour:number,blurRadius:number,
-lut:buffer)local firstValue=readu32(source,columnStart)local firstRB=band(
-firstValue,LANE_MASK)local firstGA=band(rshift(firstValue,8),LANE_MASK)local
-lastValue=readu32(source,columnStart+(imageHeight-1)*widthTimesFour)local lastRB
-=band(lastValue,LANE_MASK)local lastGA=band(rshift(lastValue,8),LANE_MASK)local
-accumulatorRB=firstRB*(blurRadius+1)local accumulatorGA=firstGA*(blurRadius+1)
-for i=0,blurRadius-1 do local value=readu32(source,columnStart+i*widthTimesFour)
+65536+readu8(lut,rshift(accumulatorGA,16))*16777216)enterIndex+=4 leaveIndex+=4
+targetIndex+=4 end for _=imageWidth-blurRadius,imageWidth-1 do local leaveValue=
+readu32(source,leaveIndex)accumulatorRB+=lastRB-band(leaveValue,LANE_MASK)
+accumulatorGA+=lastGA-band(rshift(leaveValue,8),LANE_MASK)writeu32(target,
+targetIndex,readu8(lut,band(accumulatorRB,0xffff))+readu8(lut,band(accumulatorGA
+,0xffff))*256+readu8(lut,rshift(accumulatorRB,16))*65536+readu8(lut,rshift(
+accumulatorGA,16))*16777216)leaveIndex+=4 targetIndex+=4 end end end local 
+function verticalPassColumn(source:buffer,target:buffer,columnStart:number,
+imageHeight:number,widthTimesFour:number,blurRadius:number,lut:buffer)local
+firstValue=readu32(source,columnStart)local firstRB=band(firstValue,LANE_MASK)
+local firstGA=band(rshift(firstValue,8),LANE_MASK)local lastValue=readu32(source
+,columnStart+(imageHeight-1)*widthTimesFour)local lastRB=band(lastValue,
+LANE_MASK)local lastGA=band(rshift(lastValue,8),LANE_MASK)local accumulatorRB=
+firstRB*(blurRadius+1)local accumulatorGA=firstGA*(blurRadius+1)for i=0,
+blurRadius-1 do local value=readu32(source,columnStart+i*widthTimesFour)
 accumulatorRB+=band(value,LANE_MASK)accumulatorGA+=band(rshift(value,8),
 LANE_MASK)end local enterIndex=columnStart+blurRadius*widthTimesFour local
 leaveIndex=columnStart local targetIndex=columnStart for _=0,blurRadius do local
@@ -1096,18 +1097,19 @@ initialPixels,0,Liquid.clearColor(windowColor.R,windowColor.G,windowColor.B)+
 0xff000000)local pane=Instance.new('ImageLabel')pane.Name='GlassPane'pane.Size=
 UDim2.fromScale(1,1)pane.BackgroundTransparency=1 pane.BorderSizePixel=0 pane.
 ZIndex=-999999 pane.Parent=Window local glassObject={Window=Window,Pane=pane,
-EditableImage=nil::EditableImage?,WarnedImageCreateFailure=false,Initialized=
-false,Parented=Window.Parent~=nil,Pixels=initialPixels,Scratch=buffer.create(4),
-PixelCount=1,PixelIndex=0,Resolution=Vector2.one,ResolutionX=1,GridPosX=nil::
-buffer?,GridPosY=nil::buffer?,WarpLutX=nil::buffer?,WarpLutY=nil::buffer?,
-WarpKey=nil::string?,WindowPositionX=0,WindowPositionY=0,WindowColor={
-windowColor.R,windowColor.G,windowColor.B,1-Window.BackgroundTransparency},
-BlurRadius=1,Paused=false,LiquidParams=nil::LiquidParams?,Geometry=nil::
-GeometryEntry?,OutputResolution=Vector2.zero,OutPixels=nil::buffer?,OutBlend=nil
-::buffer?,ReconJob=nil::ReconJob?,ParallelJob=nil::ParallelPending?,ParallelId=0
-,MapsGeneration=0,FinishToken=nil::{}?,ForceRecon=false,GridWritesSinceRecon=0,
-FramesSinceRecon=0,SamplesLastFrame=0,PendingLayout=false,LastLayoutRequestClock
-=0,FirstLayoutRequestClock=0,LadderCap=math.huge,UICornerConnection=nil::
+EditableImage=nil::EditableImage?,WarnedImageCreateFailure=false,
+UseGradientFallback=false,GradientPane=nil::any,Initialized=false,Parented=
+Window.Parent~=nil,Pixels=initialPixels,Scratch=buffer.create(4),PixelCount=1,
+PixelIndex=0,Resolution=Vector2.one,ResolutionX=1,GridPosX=nil::buffer?,GridPosY
+=nil::buffer?,WarpLutX=nil::buffer?,WarpLutY=nil::buffer?,WarpKey=nil::string?,
+WindowPositionX=0,WindowPositionY=0,WindowColor={windowColor.R,windowColor.G,
+windowColor.B,1-Window.BackgroundTransparency},BlurRadius=1,Paused=false,
+LiquidParams=nil::LiquidParams?,Geometry=nil::GeometryEntry?,OutputResolution=
+Vector2.zero,OutPixels=nil::buffer?,OutBlend=nil::buffer?,ReconJob=nil::ReconJob
+?,ParallelJob=nil::ParallelPending?,ParallelId=0,MapsGeneration=0,FinishToken=
+nil::{}?,ForceRecon=false,GridWritesSinceRecon=0,FramesSinceRecon=0,
+SamplesLastFrame=0,PendingLayout=false,LastLayoutRequestClock=0,
+FirstLayoutRequestClock=0,LadderCap=math.huge,UICornerConnection=nil::
 RBXScriptConnection?,Connections={}::{RBXScriptConnection}}GlassObject.byWindow[
 Window]=glassObject return glassObject end return GlassObject end)()local
 Attributes=(function()local function getNumberAttribute(Window:Instance,name:
@@ -1283,8 +1285,59 @@ clock()else Layout.update(glassObject)end end function Layout.stepDownResolution
 glassObject.OutputResolution.Y)if refused>Config.MIN_OUTPUT_RESOLUTION then
 glassObject.LadderCap=math.max(math.floor(refused/2),Config.
 MIN_OUTPUT_RESOLUTION)Layout.update(glassObject)end end return Layout end)()
-local Recon=(function()local AssetService=game:GetService('AssetService')local
-EditableImageBlur=Dependencies.EditableImageBlur local function 
+local GradientPane=(function()local GradientPane={}local MAX_STOPS=20 local
+BAND_HEIGHT=3 local function chooseStops(pixels:buffer,rowBase:number,lo:number,
+hi:number,budget:number):{number}local stops={lo,hi}if hi-lo<2 then return stops
+end for _=3,budget do local worstErr,worstX=-1,nil::number?for i=1,#stops-1 do
+local a,b=stops[i],stops[i+1]if b-a>=2 then local ao=rowBase+a*4 local bo=
+rowBase+b*4 local ar,ag,ab=buffer.readu8(pixels,ao),buffer.readu8(pixels,ao+1),
+buffer.readu8(pixels,ao+2)local br,bg,bb=buffer.readu8(pixels,bo),buffer.readu8(
+pixels,bo+1),buffer.readu8(pixels,bo+2)local span=b-a for x=a+1,b-1 do local t=(
+x-a)/span local o=rowBase+x*4 local er=math.abs(buffer.readu8(pixels,o)-(ar+(br-
+ar)*t))local eg=math.abs(buffer.readu8(pixels,o+1)-(ag+(bg-ag)*t))local eb=math.
+abs(buffer.readu8(pixels,o+2)-(ab+(bb-ab)*t))local e=if er>eg then(if er>eb then
+er else eb)elseif eg>eb then eg else eb if e>worstErr then worstErr=e worstX=x
+end end end end if not worstX or worstErr<=1 then break end table.insert(stops,
+worstX::number)table.sort(stops)end return stops end local function 
+buildSequence(pixels:buffer,width:number,row:number):(ColorSequence?,number)
+local rowBase=row*width*4 local lo,hi=-1,-1 for x=0,width-1 do if buffer.readu8(
+pixels,rowBase+x*4+3)>=250 then if lo<0 then lo=x end hi=x end end if lo<0 or hi
+-lo<1 then return nil,1 end local stops=chooseStops(pixels,rowBase,lo,hi,
+MAX_STOPS)local span=hi-lo local keypoints=table.create(#stops)local lastTime=-1
+for i,x in stops do local o=rowBase+x*4 local t=if span<=0 then(i-1)/math.max(1,
+#stops-1)else(x-lo)/span t=math.clamp(t,0,1)if t<=lastTime then t=math.min(1,
+lastTime+1e-4)end lastTime=t keypoints[#keypoints+1]=ColorSequenceKeypoint.new(t
+,Color3.fromRGB(buffer.readu8(pixels,o),buffer.readu8(pixels,o+1),buffer.readu8(
+pixels,o+2)))end if#keypoints<2 then return nil,1 end if keypoints[1].Time>0
+then keypoints[1]=ColorSequenceKeypoint.new(0,keypoints[1].Value)end if
+keypoints[#keypoints].Time<1 then keypoints[#keypoints]=ColorSequenceKeypoint.
+new(1,keypoints[#keypoints].Value)end local alphaSum=0 for x=lo,hi do alphaSum+=
+buffer.readu8(pixels,rowBase+x*4+3)end local alpha=alphaSum/((hi-lo+1)*255)
+return ColorSequence.new(keypoints),1-alpha end function GradientPane.ensure(
+state:PaneState?,parent:GuiObject,width:number,height:number):PaneState local
+bandCount=math.max(1,math.ceil(height/BAND_HEIGHT))if state and state.Width==
+width and state.Height==height and#state.Bands==bandCount then return state end
+if state then state.Container:Destroy()end local container=Instance.new('Frame')
+container.Name='GlassGradientPane'container.BackgroundTransparency=1 container.
+Size=UDim2.fromScale(1,1)container.ClipsDescendants=true container.ZIndex=-
+999999 local bands=table.create(bandCount)local gradients=table.create(bandCount
+)local scale=1/bandCount for i=1,bandCount do local band=Instance.new('Frame')
+band.Name='Band'..i band.BorderSizePixel=0 band.BackgroundColor3=Color3.new(1,1,
+1)band.Position=UDim2.fromScale(0,(i-1)*scale)band.Size=UDim2.new(1,0,scale,1)
+band.ZIndex=-999999 local gradient=Instance.new('UIGradient')gradient.Parent=
+band band.Parent=container bands[i]=band gradients[i]=gradient end container.
+Parent=parent return{Container=container,Bands=bands,Gradients=gradients,Width=
+width,Height=height}end function GradientPane.upload(state:PaneState,pixels:
+buffer,width:number,height:number)debug.profilebegin('GlassGradientUpload')local
+bandCount=#state.Bands for i=1,bandCount do local row=math.min(height-1,math.
+floor(((i-1)+0.5)*BAND_HEIGHT))local sequence,transparency=buildSequence(pixels,
+width,row)local band=state.Bands[i]if sequence then state.Gradients[i].Color=
+sequence band.BackgroundTransparency=transparency band.Visible=transparency<
+0.999 else band.Visible=false end end debug.profileend()end function
+GradientPane.destroy(state:PaneState)state.Container:Destroy()end GradientPane.
+BAND_HEIGHT=BAND_HEIGHT GradientPane.MAX_STOPS=MAX_STOPS return GradientPane end
+)()local Recon=(function()local AssetService=game:GetService('AssetService')
+local EditableImageBlur=Dependencies.EditableImageBlur local function 
 ensureEditableImage(glassObject:GlassObject,resolution:Vector2):EditableImage?
 local existing=glassObject.EditableImage if existing and existing.Size==
 resolution then return existing end local function tryCreate()return pcall(
@@ -1296,51 +1349,71 @@ not glassObject.WarnedImageCreateFailure then glassObject.
 WarnedImageCreateFailure=true warn(
 'GlassmorphicUI could not create an EditableImage:',if success then
 'budget exhausted'else editableImage)end return nil end local bound,content=
-pcall(Content.fromObject,editableImage)if not bound then if not glassObject.
-WarnedImageCreateFailure then glassObject.WarnedImageCreateFailure=true warn(
-'GlassmorphicUI could not bind an EditableImage to the pane:',content)end pcall(
-function()editableImage:Destroy()end)return nil end glassObject.
-WarnedImageCreateFailure=false if existing then existing:Destroy()end
-glassObject.EditableImage=editableImage glassObject.Pane.ImageContent=content
-return editableImage end local function makeJob(glassObject:GlassObject,grid:
-buffer):ReconJob?local geometry=glassObject.Geometry local params=glassObject.
-LiquidParams local outPixels=glassObject.OutPixels local warpLutX,warpLutY=
-glassObject.WarpLutX,glassObject.WarpLutY if not geometry or not geometry.Ready
-or not params or not outPixels or not warpLutX or not warpLutY then return nil
-end local resolution=glassObject.Resolution local WindowColor=glassObject.
-WindowColor local outW,outH=glassObject.OutputResolution.X,glassObject.
-OutputResolution.Y local redScale,blueScale=Liquid.dispersionScales(params.
-chromaticAberration)return{Out=outPixels,Disp=geometry.DispMap,Aux=geometry.
-AuxMap,Grid=grid,GridW=resolution.X,GridH=resolution.Y,OutW=outW,OutH=outH,StepX
-=geometry.StepX,StepY=geometry.StepY,WarpX=warpLutX,WarpY=warpLutY,TintR=
-WindowColor[1],TintG=WindowColor[2],TintB=WindowColor[3],TintAlpha=WindowColor[4
-],RedScale=redScale,BlueScale=blueScale,BlurSigma=math.min((glassObject.
-BlurRadius/3)/geometry.StepX,math.max(outW,outH)/2),FresnelIntensity=params.
-fresnelIntensity,RimEnabled=(params.fresnelSize>0 and params.fresnelIntensity>0)
-or(params.glareSize>0 and params.glareIntensity>0),BilinearFetch=Config.
-DEBUG_BILINEAR_FETCH,Row=0,RowEnd=outH}end local function startRecon(glassObject
-:GlassObject):boolean local job=makeJob(glassObject,glassObject.Scratch)if not
-job then return false end if not GlassObject.isOpaque(glassObject)then debug.
-profilebegin('GlassSnapshot')buffer.copy(glassObject.Scratch,0,glassObject.
-Pixels)debug.profileend()end glassObject.ReconJob=job glassObject.ForceRecon=
-false glassObject.GridWritesSinceRecon=0 glassObject.FramesSinceRecon=0 if
-Config.DEBUG_SAMPLING_HEATMAP then Liquid.renderDensityHeatmap(job)elseif Config
-.DEBUG_OVERLAY=='grid-view'or Config.DEBUG_OVERLAY=='grid-view-flat'then Liquid.
-renderGridView(job,glassObject.PixelIndex//4,Config.DEBUG_OVERLAY=='grid-view')
-end if Config.DEBUG_OVERLAY=='grid-view'or Config.DEBUG_OVERLAY=='melt-contours'
-then glassObject.ForceRecon=true end return true end local function upload(
-glassObject:GlassObject,outPixels:buffer)debug.profilebegin('GlassUpload')local
-editableImage=ensureEditableImage(glassObject,glassObject.OutputResolution)if
-editableImage then editableImage:WritePixelsBuffer(Vector2.zero,glassObject.
-OutputResolution,outPixels)else Layout.stepDownResolution(glassObject)
-glassObject.ForceRecon=true end debug.profileend()end local function 
-applyDebugOverlay(glassObject:GlassObject,job:ReconJob)local overlay=Config.
-DEBUG_OVERLAY local params=glassObject.LiquidParams if not overlay or not params
-then return end if overlay=='sdf-contours'or overlay=='melt-contours'then Liquid
-.drawContourOverlay(job,params,overlay=='melt-contours')elseif overlay==
-'normals'then Liquid.drawNormalOverlay(job,params,Config.
-DEBUG_RAW_DISTANCE_FIELD)elseif overlay=='cell-centers'or overlay==
-'cell-centers-uniform'then local gridPosX,gridPosY=glassObject.GridPosX,
+pcall(Content.fromObject,editableImage)if not bound then local cleared=pcall(
+function()glassObject.Pane.ImageContent=Content.none end)if cleared then bound,
+content=pcall(Content.fromObject,editableImage)end end if not bound then pcall(
+function()editableImage:Destroy()end)local retried,freshImage=tryCreate()if
+retried and freshImage then local freshBound,freshContent=pcall(Content.
+fromObject,freshImage)if freshBound then editableImage=freshImage bound,content=
+true,freshContent else pcall(function()freshImage:Destroy()end)end end end if
+not bound then if not glassObject.WarnedImageCreateFailure then glassObject.
+WarnedImageCreateFailure=true warn(
+'GlassmorphicUI could not bind an EditableImage to the pane.',
+'CreateEditableImage returned a',typeof(editableImage),
+'that Content.fromObject rejected:',content,
+'| Falling back to the gradient renderer. To get the exact',
+'EditableImage output, enable Game Settings > Security >',
+'Allow Mesh / Image APIs (needs a 13+ ID-verified account).')end glassObject.
+EditableImage=nil glassObject.UseGradientFallback=true return nil end
+glassObject.WarnedImageCreateFailure=false if existing then existing:Destroy()
+end glassObject.EditableImage=editableImage glassObject.Pane.ImageContent=
+content return editableImage end local function makeJob(glassObject:GlassObject,
+grid:buffer):ReconJob?local geometry=glassObject.Geometry local params=
+glassObject.LiquidParams local outPixels=glassObject.OutPixels local warpLutX,
+warpLutY=glassObject.WarpLutX,glassObject.WarpLutY if not geometry or not
+geometry.Ready or not params or not outPixels or not warpLutX or not warpLutY
+then return nil end local resolution=glassObject.Resolution local WindowColor=
+glassObject.WindowColor local outW,outH=glassObject.OutputResolution.X,
+glassObject.OutputResolution.Y local redScale,blueScale=Liquid.dispersionScales(
+params.chromaticAberration)return{Out=outPixels,Disp=geometry.DispMap,Aux=
+geometry.AuxMap,Grid=grid,GridW=resolution.X,GridH=resolution.Y,OutW=outW,OutH=
+outH,StepX=geometry.StepX,StepY=geometry.StepY,WarpX=warpLutX,WarpY=warpLutY,
+TintR=WindowColor[1],TintG=WindowColor[2],TintB=WindowColor[3],TintAlpha=
+WindowColor[4],RedScale=redScale,BlueScale=blueScale,BlurSigma=math.min((
+glassObject.BlurRadius/3)/geometry.StepX,math.max(outW,outH)/2),FresnelIntensity
+=params.fresnelIntensity,RimEnabled=(params.fresnelSize>0 and params.
+fresnelIntensity>0)or(params.glareSize>0 and params.glareIntensity>0),
+BilinearFetch=Config.DEBUG_BILINEAR_FETCH,Row=0,RowEnd=outH}end local function 
+startRecon(glassObject:GlassObject):boolean local job=makeJob(glassObject,
+glassObject.Scratch)if not job then return false end if not GlassObject.
+isOpaque(glassObject)then debug.profilebegin('GlassSnapshot')buffer.copy(
+glassObject.Scratch,0,glassObject.Pixels)debug.profileend()end glassObject.
+ReconJob=job glassObject.ForceRecon=false glassObject.GridWritesSinceRecon=0
+glassObject.FramesSinceRecon=0 if Config.DEBUG_SAMPLING_HEATMAP then Liquid.
+renderDensityHeatmap(job)elseif Config.DEBUG_OVERLAY=='grid-view'or Config.
+DEBUG_OVERLAY=='grid-view-flat'then Liquid.renderGridView(job,glassObject.
+PixelIndex//4,Config.DEBUG_OVERLAY=='grid-view')end if Config.DEBUG_OVERLAY==
+'grid-view'or Config.DEBUG_OVERLAY=='melt-contours'then glassObject.ForceRecon=
+true end return true end local function uploadGradient(glassObject:GlassObject,
+outPixels:buffer)local resolution=glassObject.OutputResolution local width,
+height=resolution.X,resolution.Y if width<2 or height<1 then return end local
+pane=glassObject.Pane local state=GradientPane.ensure(glassObject.GradientPane,
+pane,width,height)glassObject.GradientPane=state GradientPane.upload(state,
+outPixels,width,height)end local function upload(glassObject:GlassObject,
+outPixels:buffer)debug.profilebegin('GlassUpload')if glassObject.
+UseGradientFallback then uploadGradient(glassObject,outPixels)debug.profileend()
+return end local editableImage=ensureEditableImage(glassObject,glassObject.
+OutputResolution)if editableImage then editableImage:WritePixelsBuffer(Vector2.
+zero,glassObject.OutputResolution,outPixels)elseif glassObject.
+UseGradientFallback then uploadGradient(glassObject,outPixels)else Layout.
+stepDownResolution(glassObject)glassObject.ForceRecon=true end debug.profileend(
+)end local function applyDebugOverlay(glassObject:GlassObject,job:ReconJob)local
+overlay=Config.DEBUG_OVERLAY local params=glassObject.LiquidParams if not
+overlay or not params then return end if overlay=='sdf-contours'or overlay==
+'melt-contours'then Liquid.drawContourOverlay(job,params,overlay==
+'melt-contours')elseif overlay=='normals'then Liquid.drawNormalOverlay(job,
+params,Config.DEBUG_RAW_DISTANCE_FIELD)elseif overlay=='cell-centers'or overlay
+=='cell-centers-uniform'then local gridPosX,gridPosY=glassObject.GridPosX,
 glassObject.GridPosY if gridPosX and gridPosY then Liquid.drawCellCenterOverlay(
 job,gridPosX,gridPosY,overlay=='cell-centers-uniform')end end end local function 
 finishRecon(glassObject:GlassObject,job:ReconJob)glassObject.ReconJob=nil if not
@@ -1487,7 +1560,8 @@ GlassObject.removeFromUpdateList(glassObject)for _,connection in glassObject.
 Connections do connection:Disconnect()end if glassObject.UICornerConnection then
 glassObject.UICornerConnection:Disconnect()end if glassObject.Geometry then
 Liquid.releaseGeometry(glassObject.Geometry)end if glassObject.EditableImage
-then glassObject.EditableImage:Destroy()end Parallel.forget(glassObject)
+then glassObject.EditableImage:Destroy()end if glassObject.GradientPane then
+glassObject.GradientPane.Container:Destroy()end Parallel.forget(glassObject)
 glassObject.FinishToken=nil glassObject.Pane:Destroy()table.clear(glassObject)
 table.freeze(glassObject)end end end return Window end)()local RunService=game:
 GetService('RunService')local CollectionService=game:GetService(
@@ -1539,5 +1613,5 @@ DEFAULT_GLARE_OPPOSITE_SIDE=Config.DEFAULT_GLARE_OPPOSITE_SIDE GlassmorphicUI.
 DEFAULT_GLARE_ANGLE=Config.DEFAULT_GLARE_ANGLE GlassmorphicUI.
 DEFAULT_BLUR_RADIUS=Config.DEFAULT_BLUR_RADIUS GlassmorphicUI.
 DEFAULT_MAX_OUTPUT_RESOLUTION=Config.DEFAULT_MAX_OUTPUT_RESOLUTION
-GlassmorphicUI.BUILD='2-fromObject-guard'table.freeze(GlassmorphicUI)_G.
+GlassmorphicUI.BUILD='4-gradient-fallback'table.freeze(GlassmorphicUI)_G.
 GlassmorphicUI=GlassmorphicUI return GlassmorphicUI
