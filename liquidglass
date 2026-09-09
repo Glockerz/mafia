@@ -1286,58 +1286,85 @@ glassObject.OutputResolution.Y)if refused>Config.MIN_OUTPUT_RESOLUTION then
 glassObject.LadderCap=math.max(math.floor(refused/2),Config.
 MIN_OUTPUT_RESOLUTION)Layout.update(glassObject)end end return Layout end)()
 local GradientPane=(function()local GradientPane={}local MAX_STOPS=20 local
-BAND_HEIGHT=3 local function chooseStops(pixels:buffer,rowBase:number,lo:number,
-hi:number,budget:number):{number}local stops={lo,hi}if hi-lo<2 then return stops
-end for _=3,budget do local worstErr,worstX=-1,nil::number?for i=1,#stops-1 do
-local a,b=stops[i],stops[i+1]if b-a>=2 then local ao=rowBase+a*4 local bo=
-rowBase+b*4 local ar,ag,ab=buffer.readu8(pixels,ao),buffer.readu8(pixels,ao+1),
-buffer.readu8(pixels,ao+2)local br,bg,bb=buffer.readu8(pixels,bo),buffer.readu8(
-pixels,bo+1),buffer.readu8(pixels,bo+2)local span=b-a for x=a+1,b-1 do local t=(
-x-a)/span local o=rowBase+x*4 local er=math.abs(buffer.readu8(pixels,o)-(ar+(br-
-ar)*t))local eg=math.abs(buffer.readu8(pixels,o+1)-(ag+(bg-ag)*t))local eb=math.
-abs(buffer.readu8(pixels,o+2)-(ab+(bb-ab)*t))local e=if er>eg then(if er>eb then
-er else eb)elseif eg>eb then eg else eb if e>worstErr then worstErr=e worstX=x
-end end end end if not worstX or worstErr<=1 then break end table.insert(stops,
-worstX::number)table.sort(stops)end return stops end local function 
-buildSequence(pixels:buffer,width:number,row:number):(ColorSequence?,number)
-local rowBase=row*width*4 local lo,hi=-1,-1 for x=0,width-1 do if buffer.readu8(
-pixels,rowBase+x*4+3)>=250 then if lo<0 then lo=x end hi=x end end if lo<0 or hi
--lo<1 then return nil,1 end local stops=chooseStops(pixels,rowBase,lo,hi,
-MAX_STOPS)local span=hi-lo local keypoints=table.create(#stops)local lastTime=-1
-for i,x in stops do local o=rowBase+x*4 local t=if span<=0 then(i-1)/math.max(1,
-#stops-1)else(x-lo)/span t=math.clamp(t,0,1)if t<=lastTime then t=math.min(1,
-lastTime+1e-4)end lastTime=t keypoints[#keypoints+1]=ColorSequenceKeypoint.new(t
-,Color3.fromRGB(buffer.readu8(pixels,o),buffer.readu8(pixels,o+1),buffer.readu8(
-pixels,o+2)))end if#keypoints<2 then return nil,1 end if keypoints[1].Time>0
-then keypoints[1]=ColorSequenceKeypoint.new(0,keypoints[1].Value)end if
-keypoints[#keypoints].Time<1 then keypoints[#keypoints]=ColorSequenceKeypoint.
-new(1,keypoints[#keypoints].Value)end local alphaSum=0 for x=lo,hi do alphaSum+=
-buffer.readu8(pixels,rowBase+x*4+3)end local alpha=alphaSum/((hi-lo+1)*255)
-return ColorSequence.new(keypoints),1-alpha end function GradientPane.ensure(
-state:PaneState?,parent:GuiObject,width:number,height:number):PaneState local
-bandCount=math.max(1,math.ceil(height/BAND_HEIGHT))if state and state.Width==
-width and state.Height==height and#state.Bands==bandCount then return state end
-if state then state.Container:Destroy()end local container=Instance.new('Frame')
-container.Name='GlassGradientPane'container.BackgroundTransparency=1 container.
-Size=UDim2.fromScale(1,1)container.ClipsDescendants=true container.ZIndex=-
-999999 local bands=table.create(bandCount)local gradients=table.create(bandCount
-)local scale=1/bandCount for i=1,bandCount do local band=Instance.new('Frame')
-band.Name='Band'..i band.BorderSizePixel=0 band.BackgroundColor3=Color3.new(1,1,
-1)band.Position=UDim2.fromScale(0,(i-1)*scale)band.Size=UDim2.new(1,0,scale,1)
-band.ZIndex=-999999 local gradient=Instance.new('UIGradient')gradient.Parent=
-band band.Parent=container bands[i]=band gradients[i]=gradient end container.
-Parent=parent return{Container=container,Bands=bands,Gradients=gradients,Width=
-width,Height=height}end function GradientPane.upload(state:PaneState,pixels:
-buffer,width:number,height:number)debug.profilebegin('GlassGradientUpload')local
-bandCount=#state.Bands for i=1,bandCount do local row=math.min(height-1,math.
-floor(((i-1)+0.5)*BAND_HEIGHT))local sequence,transparency=buildSequence(pixels,
-width,row)local band=state.Bands[i]if sequence then state.Gradients[i].Color=
-sequence band.BackgroundTransparency=transparency band.Visible=transparency<
-0.999 else band.Visible=false end end debug.profileend()end function
-GradientPane.destroy(state:PaneState)state.Container:Destroy()end GradientPane.
-BAND_HEIGHT=BAND_HEIGHT GradientPane.MAX_STOPS=MAX_STOPS return GradientPane end
-)()local Recon=(function()local AssetService=game:GetService('AssetService')
-local EditableImageBlur=Dependencies.EditableImageBlur local function 
+BAND_HEIGHT=3 local STOP_TOLERANCE=4 local REBUILD_BUDGET=24 local PRIME_BUDGET=
+4096 local segA:{number}={}local segB:{number}={}local segErr:{number}={}local
+segX:{number}={}local stopsScratch:{number}={}local function scanSegment(pixels:
+buffer,rowBase:number,a:number,b:number):(number,number)if b-a<2 then return-1,-
+1 end local ao,bo=rowBase+a*4,rowBase+b*4 local ar=buffer.readu8(pixels,ao)local
+ag=buffer.readu8(pixels,ao+1)local ab=buffer.readu8(pixels,ao+2)local span=b-a
+local dr=(buffer.readu8(pixels,bo)-ar)/span local dg=(buffer.readu8(pixels,bo+1)
+-ag)/span local db=(buffer.readu8(pixels,bo+2)-ab)/span local cr,cg,cb=ar+dr,ag+
+dg,ab+db local worstErr,worstX=-1,-1 local o=ao+4 for x=a+1,b-1 do local er=
+buffer.readu8(pixels,o)-cr if er<0 then er=-er end local eg=buffer.readu8(pixels
+,o+1)-cg if eg<0 then eg=-eg end local eb=buffer.readu8(pixels,o+2)-cb if eb<0
+then eb=-eb end local e=if er>eg then(if er>eb then er else eb)elseif eg>eb then
+eg else eb if e>worstErr then worstErr=e worstX=x end cr+=dr cg+=dg cb+=db o+=4
+end return worstErr,worstX end local function chooseStops(pixels:buffer,rowBase:
+number,lo:number,hi:number):number stopsScratch[1],stopsScratch[2]=lo,hi local
+stopCount=2 if hi-lo<2 then return stopCount end local segments=1 segA[1],segB[1
+]=lo,hi segErr[1],segX[1]=scanSegment(pixels,rowBase,lo,hi)while stopCount<
+MAX_STOPS do local best,bestErr=0,STOP_TOLERANCE for i=1,segments do if segErr[i
+]>bestErr then bestErr=segErr[i]best=i end end if best==0 then break end local a
+,b,x=segA[best],segB[best],segX[best]segB[best]=x segErr[best],segX[best]=
+scanSegment(pixels,rowBase,a,x)segments+=1 segA[segments],segB[segments]=x,b
+segErr[segments],segX[segments]=scanSegment(pixels,rowBase,x,b)stopCount+=1
+local j=stopCount-1 while j>=1 and stopsScratch[j]>x do stopsScratch[j+1]=
+stopsScratch[j]j-=1 end stopsScratch[j+1]=x end return stopCount end local 
+function hashRow(pixels:buffer,rowBase:number,lo:number,hi:number):number if hi
+<=lo then return 0 end local h=2166136261 local o=rowBase+lo*4 for _=lo,hi do h=
+bit32.bxor(h,buffer.readu32(pixels,o))h=bit32.band(h*16777619,0xffffffff)o+=4
+end return h end local function buildSequence(pixels:buffer,width:number,row:
+number):(ColorSequence?,number,number)local rowBase=row*width*4 local lo,hi=-1,-
+1 for x=0,width-1 do if buffer.readu8(pixels,rowBase+x*4+3)>=250 then if lo<0
+then lo=x end hi=x end end if lo<0 or hi-lo<1 then return nil,1,0 end local hash
+=hashRow(pixels,rowBase,lo,hi)local stopCount=chooseStops(pixels,rowBase,lo,hi)
+local span=hi-lo local keypoints=table.create(stopCount)local lastTime=-1 for i=
+1,stopCount do local x=stopsScratch[i]local o=rowBase+x*4 local t=if span<=0
+then(i-1)/math.max(1,stopCount-1)else(x-lo)/span if t<0 then t=0 elseif t>1 then
+t=1 end if t<=lastTime then t=math.min(1,lastTime+1e-4)end lastTime=t keypoints[
+i]=ColorSequenceKeypoint.new(t,Color3.fromRGB(buffer.readu8(pixels,o),buffer.
+readu8(pixels,o+1),buffer.readu8(pixels,o+2)))end if#keypoints<2 then return nil
+,1,hash end if keypoints[1].Time>0 then keypoints[1]=ColorSequenceKeypoint.new(0
+,keypoints[1].Value)end if keypoints[#keypoints].Time<1 then keypoints[#
+keypoints]=ColorSequenceKeypoint.new(1,keypoints[#keypoints].Value)end local
+alphaSum=0 for x=lo,hi do alphaSum+=buffer.readu8(pixels,rowBase+x*4+3)end local
+alpha=alphaSum/((hi-lo+1)*255)return ColorSequence.new(keypoints),1-alpha,hash
+end function GradientPane.ensure(state:PaneState?,parent:GuiObject,width:number,
+height:number):PaneState local bandCount=math.max(1,math.ceil(height/BAND_HEIGHT
+))if state and state.Width==width and state.Height==height and#state.Bands==
+bandCount then return state end if state then state.Container:Destroy()end local
+container=Instance.new('Frame')container.Name='GlassGradientPane'container.
+BackgroundTransparency=1 container.Size=UDim2.fromScale(1,1)container.
+ClipsDescendants=true container.ZIndex=-999999 local bands=table.create(
+bandCount)local gradients=table.create(bandCount)local hashes=table.create(
+bandCount)local scale=1/bandCount for i=1,bandCount do local band=Instance.new(
+'Frame')band.Name='Band'..i band.BorderSizePixel=0 band.BackgroundColor3=Color3.
+new(1,1,1)band.Position=UDim2.fromScale(0,(i-1)*scale)band.Size=UDim2.new(1,0,
+scale,1)band.ZIndex=-999999 local gradient=Instance.new('UIGradient')gradient.
+Parent=band band.Parent=container bands[i]=band gradients[i]=gradient hashes[i]=
+0 end container.Parent=parent return{Container=container,Bands=bands,Gradients=
+gradients,Hashes=hashes,Width=width,Height=height,Cursor=1,Primed=false}end
+function GradientPane.upload(state:PaneState,pixels:buffer,width:number,height:
+number)debug.profilebegin('GlassGradientUpload')local bands=state.Bands local
+gradients=state.Gradients local hashes=state.Hashes local bandCount=#bands local
+budget=if state.Primed then REBUILD_BUDGET else PRIME_BUDGET local cursor=state.
+Cursor for _=1,bandCount do if budget<=0 then break end local i=cursor cursor+=1
+if cursor>bandCount then cursor=1 end local row=math.min(height-1,(i-1)*
+BAND_HEIGHT+BAND_HEIGHT//2)local rowBase=row*width*4 local h=2166136261 local lo
+,hi=-1,-1 local o=rowBase for x=0,width-1 do local word=buffer.readu32(pixels,o)
+h=bit32.bxor(h,word)h=bit32.band(h*16777619,0xffffffff)if word>=0xfa000000 then
+if lo<0 then lo=x end hi=x end o+=4 end if lo<0 or hi-lo<1 then if hashes[i]~=0
+then bands[i].Visible=false hashes[i]=0 end continue end if h==hashes[i]then
+continue end local hash=h local sequence,transparency=buildSequence(pixels,width
+,row)local band=bands[i]if sequence then gradients[i].Color=sequence band.
+BackgroundTransparency=transparency band.Visible=transparency<0.999 hashes[i]=
+hash else band.Visible=false hashes[i]=0 end budget-=1 end state.Cursor=cursor
+state.Primed=true debug.profileend()end function GradientPane.destroy(state:
+PaneState)state.Container:Destroy()end GradientPane.BAND_HEIGHT=BAND_HEIGHT
+GradientPane.MAX_STOPS=MAX_STOPS GradientPane.REBUILD_BUDGET=REBUILD_BUDGET
+GradientPane.PRIME_BUDGET=PRIME_BUDGET return GradientPane end)()local Recon=(
+function()local AssetService=game:GetService('AssetService')local
+EditableImageBlur=Dependencies.EditableImageBlur local function 
 ensureEditableImage(glassObject:GlassObject,resolution:Vector2):EditableImage?
 local existing=glassObject.EditableImage if existing and existing.Size==
 resolution then return existing end local function tryCreate()return pcall(
@@ -1613,5 +1640,5 @@ DEFAULT_GLARE_OPPOSITE_SIDE=Config.DEFAULT_GLARE_OPPOSITE_SIDE GlassmorphicUI.
 DEFAULT_GLARE_ANGLE=Config.DEFAULT_GLARE_ANGLE GlassmorphicUI.
 DEFAULT_BLUR_RADIUS=Config.DEFAULT_BLUR_RADIUS GlassmorphicUI.
 DEFAULT_MAX_OUTPUT_RESOLUTION=Config.DEFAULT_MAX_OUTPUT_RESOLUTION
-GlassmorphicUI.BUILD='4-gradient-fallback'table.freeze(GlassmorphicUI)_G.
+GlassmorphicUI.BUILD='5-fast-gradient'table.freeze(GlassmorphicUI)_G.
 GlassmorphicUI=GlassmorphicUI return GlassmorphicUI
