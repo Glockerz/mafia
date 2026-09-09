@@ -165,7 +165,6 @@ local OPT = {
     loopDelay       = 0.6,
     protectLeader   = true,       -- ALWAYS on (slot 1 = you); not user-toggleable
     autoSaveConfig  = false,      -- auto-save settings whenever you press Start/Stop
-    liquidGlass     = false,      -- use the real GlassmorphicUI liquid-glass backing (heavier; default OFF)
 }
 
 local BACKOFF_START, BACKOFF_MAX, BACKOFF_GROWTH = 2.0, 15.0, 1.6
@@ -441,44 +440,6 @@ local function fireButton(b)
 end
 
 ----------------------------------------------------------------
--- LIQUID GLASS (optional real GlassmorphicUI backing)
---   Loaded on demand from a raw URL; publishes _G.GlassmorphicUI.
---   Heavier (CPU raymarch + blur each frame), so it is OFF by default and
---   applied ONLY to the main panel. Falls back silently to the built-in
---   self-contained glass frame if the fetch or the effect fails.
-----------------------------------------------------------------
-if type(_G.AutoSuite_GlassURL) ~= "string" or _G.AutoSuite_GlassURL == "" then
-    _G.AutoSuite_GlassURL = "https://raw.githubusercontent.com/Glockerz/mafia/refs/heads/main/liquidglass"
-end
--- returns the GlassmorphicUI API or nil; caches on _G.GlassmorphicUI
-local function loadLiquidGlass()
-    if _G.GlassmorphicUI then return _G.GlassmorphicUI end
-    local httpget = (game.HttpGet and function(u) return game:HttpGet(u) end)
-        or (syn and syn.request and function(u) return syn.request({Url=u,Method="GET"}).Body end)
-    if not httpget then return nil end
-    local ok, src = pcall(httpget, _G.AutoSuite_GlassURL)
-    if not ok or type(src) ~= "string" or src == "" then return nil end
-    local fn, err = loadstring(src)
-    if not fn then return nil end
-    local ok2, lib = pcall(fn)
-    if ok2 and type(lib) == "table" then return lib end
-    return _G.GlassmorphicUI   -- some builds only publish to _G
-end
--- turn a plain frame into a liquid-glass window; returns true on success
-local function applyLiquidGlass(frame)
-    local Glass = loadLiquidGlass()
-    if not Glass or not frame then return false end
-    local ok = pcall(function()
-        Glass.addGlassBackground(frame)
-        -- tune the tint to match the suite's dark palette
-        frame:SetAttribute("Transparency", 0.15)
-        frame:SetAttribute("BlurRadius", UDim.new(0.06, 0))
-        frame:SetAttribute("CornerRadius", UDim.new(0, 18))
-    end)
-    return ok
-end
-
-----------------------------------------------------------------
 -- GLASS PANEL
 ----------------------------------------------------------------
 local function makeGlassFrame(parent, size, pos)
@@ -525,29 +486,6 @@ do local ok=pcall(function() gui.Parent=(gethui and gethui()) or game:GetService
    if not ok then gui.Parent=player:WaitForChild("PlayerGui") end end
 
 local win=makeGlassFrame(gui, UDim2.fromOffset(360, 640), UDim2.fromScale(0.5,0.5))
-
--- MAIN PANEL ONLY: optionally back it with the real liquid-glass effect.
--- Default is OFF; keeps the self-contained makeGlassFrame look as the fallback.
-local liquidGlassOn = false
-local function setLiquidGlass(on)
-    if on then
-        if applyLiquidGlass(win) then
-            liquidGlassOn = true
-            -- let the effect's backdrop show through the built-in tint
-            win.BackgroundTransparency = 0.35
-            return true
-        end
-        return false   -- fetch/EditableImage failed -> stay on fallback glass
-    else
-        liquidGlassOn = false
-        pcall(function()
-            game:GetService("CollectionService"):RemoveTag(win, "GlassmorphicUI")
-        end)
-        win.BackgroundTransparency = 0.15   -- restore the built-in look
-        return true
-    end
-end
-if OPT.liquidGlass then task.spawn(setLiquidGlass, true) end
 
 local ACCENT=Color3.fromRGB(140,210,255)
 local TXT=Color3.fromRGB(232,236,244)
@@ -950,17 +888,6 @@ cycleRow("Call gap (s)", function() return string.format("%.2f",OPT.callGap) end
 cycleRow("Loop delay (s)", function() return string.format("%.2f",OPT.loopDelay) end,
     function() OPT.loopDelay=math.max(0.1,OPT.loopDelay-0.1) end,
     function() OPT.loopDelay=math.min(10,OPT.loopDelay+0.1) end,"-","+")
-toggleRow("Liquid glass UI (main panel)", function() return OPT.liquidGlass end, function(v)
-    OPT.liquidGlass=v
-    if v then
-        if not setLiquidGlass(true) then
-            OPT.liquidGlass=false   -- fetch/effect failed -> revert toggle, keep fallback glass
-        end
-    else
-        setLiquidGlass(false)
-    end
-end)
-mklabel(rowFrame(28),"Real GlassmorphicUI backing, fetched from a URL. Heavier on FPS; falls back to the built-in glass if it can't load.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
 -- CONFIG (save/load all settings to the executor filesystem)
 sectionHeader("CONFIG")
@@ -1005,14 +932,6 @@ do
         local ok=LoadConfiguration()
         cfgStatus.Text = ok and ("loaded '"..(CONFIG_NAME or "default").."'") or "no saved config / load failed"
         if OPT.terrGarrison ~= nil then pcall(refreshCrewList) end
-        -- match the liquid-glass backing to the loaded setting
-        if OPT.liquidGlass ~= liquidGlassOn then
-            if OPT.liquidGlass then
-                if not setLiquidGlass(true) then OPT.liquidGlass=false end
-            else
-                setLiquidGlass(false)
-            end
-        end
     end)
 end
 toggleRow("Auto-save on Start/Stop", function() return OPT.autoSaveConfig end, function(v) OPT.autoSaveConfig=v end)
@@ -2149,10 +2068,6 @@ end)
 -- auto-load the "default" config on startup if one exists
 if isfile and isfile(configPath()) then
     pcall(LoadConfiguration)
-    -- apply liquid glass if the loaded config had it enabled
-    if OPT.liquidGlass and not liquidGlassOn then
-        task.spawn(function() if not setLiquidGlass(true) then OPT.liquidGlass=false end end)
-    end
 end
 
 log("Ready. modules="..tostring(ensureModules()).." (waiting for first Sync push for live data)")
