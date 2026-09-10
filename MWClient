@@ -159,6 +159,7 @@ local OPT = {
     atkSkipShielded = true,        -- skip targets that are currently shielded
     atkWarOnly      = false,       -- only attack WAR TARGETS (family war list)
     atkKeepShield   = false,       -- if true, never attack while MY defensive shield is active
+    atkPerTargetDaily = 5,         -- max attacks on the SAME player per day (0 = no client-side cap)
 
     -- General
     callGap         = 0.35,
@@ -878,7 +879,10 @@ toggleRow("Prefer offline (steal 10%)", function() return OPT.atkPreferOffline e
 toggleRow("Skip shielded targets", function() return OPT.atkSkipShielded end, function(v) OPT.atkSkipShielded=v end)
 toggleRow("War targets only", function() return OPT.atkWarOnly end, function(v) OPT.atkWarOnly=v end)
 toggleRow("Hold while MY shield active", function() return OPT.atkKeepShield end, function(v) OPT.atkKeepShield=v end)
-mklabel(rowFrame(28),"'up to' = cost <= value; 'exactly' = only that exact cost. Targets refresh every ~10s.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+cycleRow("Max hits / player / day", function() return OPT.atkPerTargetDaily==0 and "off" or OPT.atkPerTargetDaily end,
+    function() OPT.atkPerTargetDaily=math.max(0,OPT.atkPerTargetDaily-1) end,
+    function() OPT.atkPerTargetDaily=OPT.atkPerTargetDaily+1 end,"-","+")
+mklabel(rowFrame(28),"'up to' = cost <= value; 'exactly' = only that exact cost. Targets refresh every ~10s. Rotates to a new player after the per-day limit (default 5).",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
 -- GENERAL
 sectionHeader("GENERAL")
@@ -1607,8 +1611,21 @@ end
 --   Server refreshes targets every ~10s and enforces a per-target cooldown.
 ----------------------------------------------------------------
 local pvpCooldown = {}      -- userId -> os.clock() time we may hit them again
+local pvpDailyHits = {}     -- userId -> attacks made against them since pvpDayStamp
+local pvpDayStamp = os.date("%Y-%m-%d")  -- resets the per-target daily counters at day rollover
+local pvpMaxed    = {}      -- userId -> true : server said daily cap reached (skip until reset)
 local pvpHitCache = nil     -- cached hit list; refreshed on a timer
 local pvpHitAt   = 0
+
+-- reset the per-target daily counters when the calendar day changes
+local function pvpRollDay()
+    local today = os.date("%Y-%m-%d")
+    if today ~= pvpDayStamp then
+        pvpDayStamp = today
+        pvpDailyHits = {}
+        pvpMaxed = {}
+    end
+end
 
 -- pull a fresh hit list from the server (rate-limited to ~ every 10s to match
 -- the server's own refresh cadence)
@@ -1635,6 +1652,11 @@ local function pvpEligible(res)
             if cost > OPT.atkMaxStamina then return end        -- costs too much stamina
         end
         if (pvpCooldown[v.userId] or 0) > now then return end  -- still on our cooldown
+        if pvpMaxed[v.userId] then return end                  -- server already said daily cap hit
+        if OPT.atkPerTargetDaily and OPT.atkPerTargetDaily > 0
+           and (pvpDailyHits[v.userId] or 0) >= OPT.atkPerTargetDaily then
+            return                                             -- we've hit our per-target daily limit
+        end
         if OPT.atkSkipShielded and type(v.shielded)=="number" and v.shielded>0 then return end
         table.insert(pool, {t=v, war=isWar, cost=cost})
     end
@@ -1659,18 +1681,7 @@ end
 local function pvpPass()
     local data=getData(); if not data then return end
     local ATK=getRemote("Attack"); if not ATK then return end
-
-    -- safety: don't attack while low on health (avoid the hospital) or below reserve
-    local health=(data.pools and data.pools.health) or 0
-    local stamina=(data.pools and data.pools.stamina) or 0
-    if health <= OPT.atkMinHealth then
-        updatePanel(("attack: health low (%d) - waiting to heal"):format(math.floor(health)))
-        return
-    end
-    if stamina <= OPT.atkMinStamina then
-        updatePanel("attack: stamina reserve reached - waiting")
-        return
-    end
+    pvpRollDay()   -- clear per-target daily counters if the day changed
 
     -- optionally hold fire while our own defensive shield is up (attacking drops it)
     if OPT.atkKeepShield then
@@ -1681,53 +1692,110 @@ local function pvpPass()
         end
     end
 
-    local res=pvpGetTargets(false)
-    if not res then updatePanel("attack: no hit list yet") return end
-    local pool=pvpEligible(res)
-    if #pool==0 then
-        updatePanel(("attack: no targets %s %d stamina"):format(
-            OPT.atkStaminaMode=="exact" and "at exactly" or "<=", OPT.atkMaxStamina))
-        return
-    end
+    -- ROTATION LOOP: keep attacking DIFFERENT eligible targets back-to-back.
+    -- After each hit the target is put on its per-target cooldown (20-30s), so
+    -- pvpEligible drops them and the next iteration naturally moves to someone
+    -- else - i.e. we work through the hit list while earlier targets cool down,
+    -- instead of idling for one target's cooldown. We stop only when we run out
+    -- of eligible targets, hit a health/stamina limit, or get rate limited.
+    local guard=0
+    while not _G.CrewAutoRoll_Stop and guard<50 do
+        guard=guard+1
 
-    local pick=pool[1].t
-    -- don't spend below the reserve on this specific hit
-    if stamina - (pool[1].cost or 1) < OPT.atkMinStamina then
-        updatePanel("attack: would dip below stamina reserve - waiting")
-        return
-    end
+        -- refresh MY pools each iteration (health/stamina change as we fight)
+        data=getData() or data
+        local health=(data.pools and data.pools.health) or 0
+        local stamina=(data.pools and data.pools.stamina) or 0
+        if health <= OPT.atkMinHealth then
+            updatePanel(("attack: health low (%d) - waiting to heal"):format(math.floor(health)))
+            return
+        end
+        if stamina <= OPT.atkMinStamina then
+            updatePanel("attack: stamina reserve reached - waiting")
+            return
+        end
 
-    local ok,rep=pcall(function() return ATK:InvokeServer(pick.userId) end)
-    if not ok or type(rep)~="table" then task.wait(OPT.callGap); return end
-    if not rep.ok then
-        -- server told us to back off on this target
-        if rep.retryIn then pvpCooldown[pick.userId]=os.clock()+rep.retryIn end
-        local msg=tostring(rep.msg or ""):lower()
-        if msg:find("rate") or msg:find("slow") or msg:find("limit") then
-            stats.limited=true; task.wait(backoff)
-            backoff=math.min(backoff*BACKOFF_GROWTH,BACKOFF_MAX)
-        elseif rep.msg then updatePanel("attack: "..tostring(rep.msg)) end
-        return
-    end
-    stats.limited=false; backoff=BACKOFF_START
+        local res=pvpGetTargets(false)
+        if not res then updatePanel("attack: no hit list yet") return end
+        local pool=pvpEligible(res)
+        if #pool==0 then
+            updatePanel((guard==1
+                and "attack: no targets %s %d stamina"
+                or  "attack: all targets on cooldown/maxed - waiting"):format(
+                OPT.atkStaminaMode=="exact" and "at exactly" or "<=", OPT.atkMaxStamina))
+            return
+        end
 
-    -- apply the game's per-target cooldown so we rotate to other targets
-    local cfg=getConfig()
-    local cd=(cfg and cfg.COMBAT and cfg.COMBAT.targetCooldown) or 30
-    pvpCooldown[pick.userId]=os.clock()+cd
+        local pick=pool[1].t
+        -- don't spend below the reserve on this specific hit
+        if stamina - (pool[1].cost or 1) < OPT.atkMinStamina then
+            updatePanel("attack: would dip below stamina reserve - waiting")
+            return
+        end
 
-    stats.pvpAttacks=stats.pvpAttacks+1
-    if rep.won then
-        stats.pvpWins=stats.pvpWins+1
-        stats.pvpStolen=stats.pvpStolen+(rep.stolen or 0)
-        updatePanel(("BEAT %s  +%s  (%d stamina)%s"):format(
-            pick.name or ("#"..tostring(pick.userId)), fmtMoney(rep.stolen or 0),
-            pool[1].cost or 1, rep.knockout and " KO!" or ""))
-    else
-        updatePanel(("lost to %s  (-%s hp)"):format(
-            pick.name or ("#"..tostring(pick.userId)), tostring(rep.dmgTaken or 0)))
+        local ok,rep=pcall(function() return ATK:InvokeServer(pick.userId) end)
+        if not ok or type(rep)~="table" then task.wait(OPT.callGap); return end
+        if not rep.ok then
+            local msg=tostring(rep.msg or ""):lower()
+            -- CASE 1: we've hit THIS player their daily max (usually 5). This is NOT
+            -- a global rate limit - it is per-target and permanent until day reset.
+            -- Mark the target maxed and rotate to someone else immediately (don't
+            -- back off, don't re-pick this same person).
+            if msg:find("daily") or msg:find("max") or msg:find("already")
+            or msg:find("times") or msg:find("cap") or msg:find("no more") then
+                pvpMaxed[pick.userId]=true
+                updatePanel(("attack: %s maxed for today - next target"):format(
+                    pick.name or ("#"..tostring(pick.userId))))
+                -- loop continues; pvpEligible now skips them and picks another
+            -- CASE 2: a genuine GLOBAL rate limit (server-wide "too fast"). Back off
+            -- and end this pass (waiting is unavoidable here).
+            elseif msg:find("rate") or msg:find("slow") or msg:find("too fast")
+            or msg:find("wait a") or msg:find("try again") then
+                stats.limited=true; task.wait(backoff)
+                backoff=math.min(backoff*BACKOFF_GROWTH,BACKOFF_MAX)
+                return
+            else
+                -- CASE 3: any other per-target rejection (their shield, cooldown, in
+                -- hospital, offline-only, etc). Put a cooldown on JUST this target so
+                -- we rotate off them instead of hammering the same person forever.
+                local retry=tonumber(rep.retryIn)
+                pvpCooldown[pick.userId]=os.clock()+(retry or 60)
+                if rep.msg then updatePanel("attack: "..tostring(rep.msg).." - next target") end
+                -- loop continues to the next eligible target
+            end
+        else
+            stats.limited=false; backoff=BACKOFF_START
+
+            -- count this successful hit against the target's per-day tally; when it
+            -- reaches the cap, pvpEligible will skip them from now on
+            pvpDailyHits[pick.userId]=(pvpDailyHits[pick.userId] or 0)+1
+            if OPT.atkPerTargetDaily and OPT.atkPerTargetDaily > 0
+               and pvpDailyHits[pick.userId] >= OPT.atkPerTargetDaily then
+                pvpMaxed[pick.userId]=true
+            end
+
+            -- apply the game's per-target cooldown so this pass (and the next)
+            -- rotate to OTHER targets while this one cools down
+            local cfg=getConfig()
+            local cd=(cfg and cfg.COMBAT and cfg.COMBAT.targetCooldown) or 30
+            pvpCooldown[pick.userId]=os.clock()+cd
+
+            stats.pvpAttacks=stats.pvpAttacks+1
+            if rep.won then
+                stats.pvpWins=stats.pvpWins+1
+                stats.pvpStolen=stats.pvpStolen+(rep.stolen or 0)
+                updatePanel(("BEAT %s  +%s  (%d stamina)%s"):format(
+                    pick.name or ("#"..tostring(pick.userId)), fmtMoney(rep.stolen or 0),
+                    pool[1].cost or 1, rep.knockout and " KO!" or ""))
+            else
+                updatePanel(("lost to %s  (-%s hp)"):format(
+                    pick.name or ("#"..tostring(pick.userId)), tostring(rep.dmgTaken or 0)))
+            end
+        end
+
+        -- pace between hits, then loop to the NEXT different target
+        task.wait(OPT.callGap)
     end
-    task.wait(OPT.callGap)
 end
 
 ----------------------------------------------------------------
