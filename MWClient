@@ -159,7 +159,6 @@ local OPT = {
     atkSkipShielded = true,        -- skip targets that are currently shielded
     atkWarOnly      = false,       -- only attack WAR TARGETS (family war list)
     atkKeepShield   = false,       -- if true, never attack while MY defensive shield is active
-    atkPerTargetDaily = 5,         -- max attacks on the SAME player per day (0 = no client-side cap)
 
     -- General
     callGap         = 0.35,
@@ -879,10 +878,7 @@ toggleRow("Prefer offline (steal 10%)", function() return OPT.atkPreferOffline e
 toggleRow("Skip shielded targets", function() return OPT.atkSkipShielded end, function(v) OPT.atkSkipShielded=v end)
 toggleRow("War targets only", function() return OPT.atkWarOnly end, function(v) OPT.atkWarOnly=v end)
 toggleRow("Hold while MY shield active", function() return OPT.atkKeepShield end, function(v) OPT.atkKeepShield=v end)
-cycleRow("Max hits / player / day", function() return OPT.atkPerTargetDaily==0 and "off" or OPT.atkPerTargetDaily end,
-    function() OPT.atkPerTargetDaily=math.max(0,OPT.atkPerTargetDaily-1) end,
-    function() OPT.atkPerTargetDaily=OPT.atkPerTargetDaily+1 end,"-","+")
-mklabel(rowFrame(28),"'up to' = cost <= value; 'exactly' = only that exact cost. Targets refresh every ~10s. Rotates to a new player after the per-day limit (default 5).",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
+mklabel(rowFrame(28),"'up to' = cost <= value; 'exactly' = only that exact cost. Targets refresh every ~10s. Each player can be hit 5x/day, then it rotates to a new one.",UDim2.new(0,10,0,0),UDim2.new(1,-16,1,0),11,SUBTXT,false,nil,6)
 
 -- GENERAL
 sectionHeader("GENERAL")
@@ -1610,10 +1606,19 @@ end
 --                                    knockout, retryIn, dmgTaken, msg, ... }
 --   Server refreshes targets every ~10s and enforces a per-target cooldown.
 ----------------------------------------------------------------
+-- The game allows a FIXED 5 attacks per player per day. This is enforced by the
+-- server; the client counter below is just an optimization so we skip a target
+-- we KNOW we've already maxed this session (avoids wasted, guaranteed-to-fail
+-- calls). It is NOT the source of truth: if you attacked someone 1-4 times
+-- BEFORE running the script, our counter starts at 0 and we'll try them - the
+-- server then rejects with a "daily max" reply and pvpMaxed marks them skipped.
+-- So a pre-existing partial count can never break rotation; worst case is one
+-- harmless failed attack that immediately rotates to the next player.
+local PVP_DAILY_CAP = 5     -- fixed by the game; not user-configurable
 local pvpCooldown = {}      -- userId -> os.clock() time we may hit them again
-local pvpDailyHits = {}     -- userId -> attacks made against them since pvpDayStamp
+local pvpDailyHits = {}     -- userId -> attacks made against them THIS SESSION since pvpDayStamp
 local pvpDayStamp = os.date("%Y-%m-%d")  -- resets the per-target daily counters at day rollover
-local pvpMaxed    = {}      -- userId -> true : server said daily cap reached (skip until reset)
+local pvpMaxed    = {}      -- userId -> true : daily cap reached (skip until reset)
 local pvpHitCache = nil     -- cached hit list; refreshed on a timer
 local pvpHitAt   = 0
 
@@ -1652,10 +1657,9 @@ local function pvpEligible(res)
             if cost > OPT.atkMaxStamina then return end        -- costs too much stamina
         end
         if (pvpCooldown[v.userId] or 0) > now then return end  -- still on our cooldown
-        if pvpMaxed[v.userId] then return end                  -- server already said daily cap hit
-        if OPT.atkPerTargetDaily and OPT.atkPerTargetDaily > 0
-           and (pvpDailyHits[v.userId] or 0) >= OPT.atkPerTargetDaily then
-            return                                             -- we've hit our per-target daily limit
+        if pvpMaxed[v.userId] then return end                  -- already at the daily cap (server or us)
+        if (pvpDailyHits[v.userId] or 0) >= PVP_DAILY_CAP then
+            return                                             -- hit them 5x this session already
         end
         if OPT.atkSkipShielded and type(v.shielded)=="number" and v.shielded>0 then return end
         table.insert(pool, {t=v, war=isWar, cost=cost})
@@ -1767,10 +1771,9 @@ local function pvpPass()
             stats.limited=false; backoff=BACKOFF_START
 
             -- count this successful hit against the target's per-day tally; when it
-            -- reaches the cap, pvpEligible will skip them from now on
+            -- reaches the fixed cap of 5, pvpEligible will skip them from now on
             pvpDailyHits[pick.userId]=(pvpDailyHits[pick.userId] or 0)+1
-            if OPT.atkPerTargetDaily and OPT.atkPerTargetDaily > 0
-               and pvpDailyHits[pick.userId] >= OPT.atkPerTargetDaily then
+            if pvpDailyHits[pick.userId] >= PVP_DAILY_CAP then
                 pvpMaxed[pick.userId]=true
             end
 
