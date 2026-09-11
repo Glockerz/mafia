@@ -444,24 +444,33 @@ end
 ----------------------------------------------------------------
 local function makeGlassFrame(parent, size, pos)
     local f=Instance.new("Frame")
-    f.BackgroundColor3=Color3.fromRGB(26,30,44); f.BackgroundTransparency=0.15
+    -- OBSIDIAN GLASS: near-black, mostly opaque for high contrast + a deep gloss
+    f.BackgroundColor3=Color3.fromRGB(8,9,13); f.BackgroundTransparency=0.06
     f.Size=size; f.Position=pos; f.AnchorPoint=Vector2.new(0.5,0.5); f.Parent=parent
     Instance.new("UICorner",f).CornerRadius=UDim.new(0,18)
+    -- vertical polish: a faint cool highlight at the very top fading to pure black
     local tint=Instance.new("UIGradient",f); tint.Rotation=90
-    tint.Color=ColorSequence.new(Color3.fromRGB(78,88,120),Color3.fromRGB(16,19,30))
-    tint.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.05),NumberSequenceKeypoint.new(1,0.32)})
+    tint.Color=ColorSequence.new({
+        ColorSequenceKeypoint.new(0,Color3.fromRGB(34,34,36)),
+        ColorSequenceKeypoint.new(0.5,Color3.fromRGB(13,13,14)),
+        ColorSequenceKeypoint.new(1,Color3.fromRGB(3,3,3)),
+    })
+    tint.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.02),NumberSequenceKeypoint.new(1,0.06)})
+    -- glassy top sheen (subtle so the surface reads as polished obsidian, not milky)
     local sheen=Instance.new("Frame"); sheen.BackgroundColor3=Color3.fromRGB(255,255,255)
-    sheen.BorderSizePixel=0; sheen.Size=UDim2.new(1,0,0.4,0); sheen.ZIndex=0; sheen.Parent=f
+    sheen.BorderSizePixel=0; sheen.Size=UDim2.new(1,0,0.35,0); sheen.ZIndex=0; sheen.Parent=f
     Instance.new("UICorner",sheen).CornerRadius=UDim.new(0,18)
     local sg=Instance.new("UIGradient",sheen); sg.Rotation=90
-    sg.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.8),NumberSequenceKeypoint.new(1,1)})
+    sg.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.88),NumberSequenceKeypoint.new(1,1)})
+    -- crisp bright rim so the black panel has a defined, high-contrast edge
     local stroke=Instance.new("UIStroke",f); stroke.Color=Color3.fromRGB(255,255,255)
-    stroke.Thickness=1.4; stroke.Transparency=0.55; stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
+    stroke.Thickness=1.5; stroke.Transparency=0.3; stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
     local st=Instance.new("UIGradient",stroke); st.Rotation=90
-    st.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.25),NumberSequenceKeypoint.new(1,0.8)})
+    st.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.1),NumberSequenceKeypoint.new(1,0.7)})
+    -- deep drop shadow to lift the obsidian slab off whatever is behind it
     local glow=Instance.new("ImageLabel"); glow.BackgroundTransparency=1; glow.Image="rbxassetid://5028857084"
-    glow.ImageColor3=Color3.fromRGB(0,0,0); glow.ImageTransparency=0.55; glow.ScaleType=Enum.ScaleType.Slice
-    glow.SliceCenter=Rect.new(24,24,276,276); glow.Size=UDim2.new(1,40,1,40)
+    glow.ImageColor3=Color3.fromRGB(0,0,0); glow.ImageTransparency=0.35; glow.ScaleType=Enum.ScaleType.Slice
+    glow.SliceCenter=Rect.new(24,24,276,276); glow.Size=UDim2.new(1,48,1,48)
     glow.Position=UDim2.fromScale(0.5,0.5); glow.AnchorPoint=Vector2.new(0.5,0.5); glow.ZIndex=-1; glow.Parent=f
     return f
 end
@@ -487,12 +496,13 @@ do local ok=pcall(function() gui.Parent=(gethui and gethui()) or game:GetService
 
 local win=makeGlassFrame(gui, UDim2.fromOffset(360, 640), UDim2.fromScale(0.5,0.5))
 
-local ACCENT=Color3.fromRGB(140,210,255)
-local TXT=Color3.fromRGB(232,236,244)
-local SUBTXT=Color3.fromRGB(165,173,190)
-local ONCOL=Color3.fromRGB(46,160,90)
-local OFFCOL=Color3.fromRGB(120,60,60)
-local CTRLBG=Color3.fromRGB(54,60,80)
+-- OBSIDIAN palette: pure white on near-black for maximum contrast
+local ACCENT=Color3.fromRGB(255,255,255)
+local TXT=Color3.fromRGB(255,255,255)
+local SUBTXT=Color3.fromRGB(165,170,180)
+local ONCOL=Color3.fromRGB(40,175,95)
+local OFFCOL=Color3.fromRGB(150,50,55)
+local CTRLBG=Color3.fromRGB(24,27,36)
 
 local function mklabel(parent,text,pos,size,tsize,color,bold,align,zi)
     local l=Instance.new("TextLabel"); l.BackgroundTransparency=1
@@ -505,7 +515,7 @@ end
 
 mklabel(win,"MAFIA WARS AUTO SUITE", UDim2.new(0,16,0,10), UDim2.new(1,-32,0,24), 19, ACCENT, true, Enum.TextXAlignment.Center)
 local modeLbl  = mklabel(win,"Mode: --",     UDim2.new(0,16,0,36), UDim2.new(1,-32,0,15),12,SUBTXT,false,Enum.TextXAlignment.Center)
-local statusLbl= mklabel(win,"Status: idle", UDim2.new(0,16,0,54), UDim2.new(1,-32,0,18),14,Color3.fromRGB(205,210,220),true)
+local statusLbl= mklabel(win,"Status: idle", UDim2.new(0,16,0,54), UDim2.new(1,-32,0,18),14,Color3.fromRGB(240,244,250),true)
 local cnt1=mklabel(win,"", UDim2.new(0,16,0,76), UDim2.new(1,-32,0,14),11,Color3.fromRGB(180,200,180))
 local cnt2=mklabel(win,"", UDim2.new(0,16,0,90), UDim2.new(1,-32,0,14),11,Color3.fromRGB(190,190,205))
 local cnt3=mklabel(win,"", UDim2.new(0,16,0,104),UDim2.new(1,-32,0,14),11,Color3.fromRGB(200,190,180))
@@ -521,7 +531,7 @@ local scroll=Instance.new("ScrollingFrame")
 scroll.BackgroundTransparency=1; scroll.BorderSizePixel=0
 scroll.Position=UDim2.new(0,12,0,138); scroll.Size=UDim2.new(1,-24,1,-210)
 scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
-scroll.ScrollBarThickness=4; scroll.ScrollBarImageColor3=Color3.fromRGB(150,160,180)
+scroll.ScrollBarThickness=4; scroll.ScrollBarImageColor3=Color3.fromRGB(220,224,230)
 scroll.ZIndex=5; scroll.Parent=win
 local layout=Instance.new("UIListLayout",scroll)
 layout.Padding=UDim.new(0,6); layout.SortOrder=Enum.SortOrder.LayoutOrder
@@ -538,10 +548,13 @@ local function sectionHeader(text)
     line.Size=UDim2.new(1,0,0,1); line.ZIndex=6
 end
 local function rowFrame(h)
+    -- faintly-lit dark slab so rows read as raised panels on the obsidian surface
     local r=Instance.new("Frame"); r.BackgroundColor3=Color3.fromRGB(255,255,255)
-    r.BackgroundTransparency=0.94; r.BorderSizePixel=0; r.Size=UDim2.new(1,0,0,h or 30)
+    r.BackgroundTransparency=0.965; r.BorderSizePixel=0; r.Size=UDim2.new(1,0,0,h or 30)
     r.LayoutOrder=nextOrder(); r.ZIndex=5; r.Parent=scroll
     Instance.new("UICorner",r).CornerRadius=UDim.new(0,8)
+    local rs=Instance.new("UIStroke",r); rs.Color=Color3.fromRGB(255,255,255)
+    rs.Thickness=1; rs.Transparency=0.9; rs.ApplyStrokeMode=Enum.ApplyStrokeMode.Border
     return r
 end
 local function smallBtn(parent,text,w)
@@ -594,7 +607,7 @@ local function inputRow(text, get, set, hint)
     mklabel(r,text, UDim2.new(0,10,0,0), UDim2.new(1,-150,1,0),13,TXT,false,nil,6)
     local box=Instance.new("TextBox")
     box.AnchorPoint=Vector2.new(1,0.5); box.Position=UDim2.new(1,-6,0.5,0)
-    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(40,44,60)
+    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(18,20,27)
     box.BorderSizePixel=0; box.Font=Enum.Font.GothamBold; box.TextSize=13
     box.TextColor3=ACCENT; box.ClearTextOnFocus=false
     box.PlaceholderText=hint or ""; box.PlaceholderColor3=Color3.fromRGB(120,126,140)
@@ -898,7 +911,7 @@ do
     mklabel(r,"Config name", UDim2.new(0,10,0,0), UDim2.new(1,-150,1,0),13,TXT,false,nil,6)
     local box=Instance.new("TextBox")
     box.AnchorPoint=Vector2.new(1,0.5); box.Position=UDim2.new(1,-6,0.5,0)
-    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(40,44,60)
+    box.Size=UDim2.fromOffset(128,24); box.BackgroundColor3=Color3.fromRGB(18,20,27)
     box.BorderSizePixel=0; box.Font=Enum.Font.GothamBold; box.TextSize=13
     box.TextColor3=ACCENT; box.ClearTextOnFocus=false; box.Text=CONFIG_NAME
     box.PlaceholderText="default"; box.PlaceholderColor3=Color3.fromRGB(120,126,140)
