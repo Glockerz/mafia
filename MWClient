@@ -2132,6 +2132,33 @@ closeBtn.Activated:Connect(function() _G.CrewAutoRoll_Stop=true; task.wait(0.1);
 -- start listening for the server's data pushes right away
 primeData()
 
+----------------------------------------------------------------
+-- ANTI-AFK  (defeat Roblox's ~20-minute idle disconnect)
+--   Roblox fires LocalPlayer.Idled after ~20 min without input, then kicks
+--   you shortly after. We listen for that event and simulate a tiny, harmless
+--   input via VirtualUser (a click at 0,0 and back), which resets the idle
+--   timer without affecting your character or the game. This keeps overnight
+--   grinds alive. Runs once; safe to have even when the suite is stopped.
+----------------------------------------------------------------
+do
+    if not getgenv().AutoSuite_AntiAFK then
+        getgenv().AutoSuite_AntiAFK = true
+        local ok, VirtualUser = pcall(function() return game:GetService("VirtualUser") end)
+        if ok and VirtualUser then
+            player.Idled:Connect(function()
+                pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:ClickButton2(Vector2.new(0, 0))
+                end)
+                log("anti-afk: idle detected, sent keep-alive input")
+            end)
+            log("anti-afk: armed (idle disconnect defeated)")
+        else
+            log("anti-afk: VirtualUser unavailable on this executor - skipping")
+        end
+    end
+end
+
 -- keep the mode line honest about whether data has arrived yet
 task.spawn(function()
     while gui and gui.Parent do
